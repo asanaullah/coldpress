@@ -1,0 +1,39 @@
+benchmarks:
+  - name: guidellm
+    launch_node: 0 
+    target_node: 0
+    log: True
+    port: 8000
+    args: 
+      max-seconds: 30
+      rate-type: throughput
+      data: "\"prompt_tokens=256,output_tokens=128\""
+
+
+model: 
+  name: 'ibm-granite/granite-3.3-8b-instruct'
+  max_model_len: 10000
+
+model_server:
+  - framework:
+      name: vllm
+      env:
+        VLLM_USE_V1: 1 
+      args:
+        port: 8000
+        gpu-memory-utilization: 0.6
+    hardware:
+      node: 0
+      gpu: 0
+    storage:
+      mounts:
+        - name: s3_main_bucket
+          mount_point: /mnt/s3_data
+          uri: s3://my-project-bucket/models/
+        - name: nfs_shared_fs
+          mount_point: /mnt/nfs_share
+          uri: nfs://10.0.1.5/exports/datasets
+        - name: ceph_cluster_storage
+          mount_point: /mnt/ceph_fs
+          uri: ceph://user@my-ceph-cluster/pools/main_data
+    log: True

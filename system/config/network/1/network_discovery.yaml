@@ -1,0 +1,38 @@
+ip:
+  defaults:
+    name: eno
+    hca: mlx5_
+  control:
+    ssh:
+      name: ovn-k8s-mp0
+      hca: null
+      inet: 10.130.2.2
+  data:
+    gpu_0:
+      id: 0
+      inet: 192.168.100.91
+      name: eno5np0
+      hca: mlx5_3
+      mtu: 9000
+      GIDs: []
+    gpu_1:
+      id: 1
+      inet: 192.168.101.91
+      name: eno6np0
+      hca: mlx5_2
+      mtu: 9000
+      GIDs: []
+    gpu_2:
+      id: 2
+      inet: 192.168.102.91
+      name: eno7np0
+      hca: mlx5_5
+      mtu: 9000
+      GIDs: []
+    gpu_3:
+      id: 3
+      inet: 192.168.103.91
+      name: eno8np0
+      hca: mlx5_4
+      mtu: 9000
+      GIDs: []
