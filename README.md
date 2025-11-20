@@ -115,7 +115,7 @@ Coldpress facilitates a dual-role usage model defined by privilege levels. Admin
 ### Requirements
 - OS/Environment: Linux environment with access to an OpenShift Cluster.
 - Python: Python 3.x (Tested on 3.13).
-- OpenShift Client: `oc` CLI tool installed and configured (Version 4.17+ recommended based on your output).
+- OpenShift Client: `oc` CLI tool installed and configured (Tested on version 4.17+).
 - Cluster Access: User must be logged in (`oc login`) and have permissions to create/switch to the project named coldpress.
 - Environment Variable: `COLDPRESS_ROOT_DIR` must be set to the absolute path of the project root.
 
