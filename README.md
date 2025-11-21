@@ -138,7 +138,8 @@ python coldpress.py
 ### Launch discovery tasks and experiments 
 The Coldpress API listens for POST requests on port 50000. The body must be JSON with a command key.
 
-1. Discover network on `Node 0`. This always launches a job on the `Job 0` queue .
+#### 1. Discover the network configuration on "Node 0". 
+This always launches a job on the `Job 0` queue .
 ```bash
 curl -X POST http://127.0.0.1:50000/ \
      -H "Content-Type: application/json" \
@@ -158,7 +159,8 @@ Expected response
 }
 ```
 
-2. Monitor status of `Job 0` to check if the discovery task is running or completed. The results of network discovery will be placed in `$(COLDPRESS_ROOT_DIR)/system/config/network/<node id>`
+#### 2. Monitor the status of "Job 0" 
+Check if the discovery task is running or completed. The results of network discovery will be placed in `$(COLDPRESS_ROOT_DIR)/system/config/network/<node id>`
 ```bash
 curl -X POST http://127.0.0.1:50000/ \
      -H "Content-Type: application/json" \
@@ -222,7 +224,7 @@ Expected response
 # Note: Job 0 will stay in the "running" state even without any tasks, but all other Jobs will go into a "completed" states once all tasks finish. This is because all discovery tasks are scheduled on the Job 0 queue, and experiments create their own queues (Job 1 onwards).  
 ```
 
-3. List available experiments.
+#### 3. List the available experiments
 ```bash
 curl -X POST http://127.0.0.1:50000/ \
      -H "Content-Type: application/json" \
@@ -245,7 +247,8 @@ Expected response
 }
 ```
      
-4. Launch the basic_test example This creates a new job (should be `Job 1` if run after discovery).
+#### 4. Launch the "basic_test" example 
+This creates a new job, and should be `Job 1` if run after discovery.
 ```bash
 curl -X POST http://127.0.0.1:50000/ \
      -H "Content-Type: application/json" \
@@ -265,7 +268,7 @@ Expected response
 }
 ```
 
-5. Monitor status of `Job 1`
+#### 5. Monitor the status of "Job 1"
 ```bash
 curl -X POST http://127.0.0.1:50000/ \
      -H "Content-Type: application/json" \
@@ -371,7 +374,7 @@ Expected response
 
 ```
 
-While the Job is active, we can also verify Pods and PVCs using the CLI
+While the Job is active, we can also verify Pods and PVCs using the CLI.
 ```
 $ oc get pods -o wide
 NAME                                       READY   STATUS    RESTARTS   AGE   IP               NODE             NOMINATED NODE   READINESS GATES
@@ -384,7 +387,8 @@ NAME                                                        STATUS   VOLUME     
 
 ```
 
-6. Once completed, list results of `Job 1`.
+#### 6. Once completed, list the results of "Job 1"
+This will return a list of files associated with each task in the job, which can be inspected with the Coldpress `cat` command.
 ```bash
 curl -X POST http://127.0.0.1:50000/ \
      -H "Content-Type: application/json" \
@@ -416,7 +420,7 @@ Expected response
 }
 ```
 
-7. Print and verify the experiment configuration used for `Job 1`
+#### 7. Print and verify the experiment configuration used for "Job 1"
 ```bash
 curl -X POST http://127.0.0.1:50000/ \
      -H "Content-Type: application/json" \
@@ -435,7 +439,7 @@ Expected response
 }
 ```
 
-8. Print the results: `benchmarks.json`
+#### 8. Print the results of Job 1, Task 1: "benchmarks.json"
 ```bash
 curl -X POST http://127.0.0.1:50000/ \
      -H "Content-Type: application/json" \
