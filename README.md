@@ -22,7 +22,7 @@ Currently, our focus is on AI inference workloads, with a future target being to
 
 
 ## Motivation
-While the widespread adoption of AI has made powerful models accessible to a broad audience, the deep systems expertise required to execute these workloads efficiently remains concentrated within a small group of engineers. Optimizing AI workloads demands a holistic approach where every layer of the technology stack, as shown in the diagram below, presents a unique opportunity to improve outcomes. This outcome could be one or more objectives such as maximum throughput, minimized latency, or energy efficiency.
+While the widespread adoption of AI has made powerful models accessible to a broad audience, the deep systems expertise required to execute these workloads efficiently remains concentrated within a small group of engineers. Optimizing AI workloads demands a holistic approach where every layer of the technology stack, as shown in the diagram below, presents a unique opportunity to improve outcomes, such as maximum throughput, minimized latency, or energy efficiency.
 
 - **Model & Workload:** At the very top, optimization involves adjusting hyperparameters, quantization levels (e.g., FP16 vs. INT8), and input configurations such as batch sizes, sequence lengths, and concurrency limits to maximize hardware utilization without exhausting memory.
 
