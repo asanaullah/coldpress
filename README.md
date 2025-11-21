@@ -1,14 +1,12 @@
 # <sup>COLDPRESS</sup>
  [ Documentation partially generated with AI ]
 
-Coldpress is an extensible performance tuning and orchestration framework designed to optimize AI workloads by systematically identifying and resolving hardware and software bottlenecks. It functions as a high-level job manager that executes scalable, lifecycle-managed experiments, enabling users to deploy parallel workloads while simultaneously discovering intricate system states (e.g. NUMA topology, network configurations) and dynamically adjusting tunable system and workload knobs. By abstracting the underlying runtime environment, Coldpress provides a unified interface for executing complex testing workflows across diverse infrastructures, including OpenShift, Bare metal, and Slurm, facilitating reproducible research and deep optimization of the AI technology stack.
+Coldpress is an extensible optimization and orchestration framework designed to manage complex AI workloads by systematically analyzing and configuring hardware and software states. It functions as a high-level job manager that executes scalable, lifecycle-managed experiments, enabling users to deploy parallel workloads while simultaneously discovering intricate system states (e.g. NUMA topology, network configurations) and dynamically adjusting system configurations and workload parameters. By abstracting the underlying runtime environment, Coldpress provides a unified interface for executing complex testing workflows across diverse infrastructures, including OpenShift, Bare metal, and Slurm, facilitating reproducible research and holistic optimization of the AI technology stack.
 
-Currently, our focus is on AI inference workloads, with a future target being to optimize performance for AI training, as well as other HPC-like workloads. 
+Currently, our focus is on AI inference workloads, with a future target being to optimize AI training, as well as other HPC-like workloads.
 
 ## Contents
-- [Motivation: Performance Tuning](#motivation-performance-tuning)
-  - [Challenge](#challenge)
-  - [Opportunity](#opportunity)
+- [Motivation](#motivation)
 - [Coldpress Usage Model](#coldpress-usage-model)
 - [Quick Start Guide](#quick-start-guide)
   - [Requirements](#requirements)
@@ -23,17 +21,16 @@ Currently, our focus is on AI inference workloads, with a future target being to
 
 
 
-## Motivation: Performance Tuning
-#### Challenge
-While the democratization of AI has made powerful models accessible to a broad audience, the deep systems expertise required to execute these workloads efficiently remains concentrated within a small group of engineers. Optimizing AI workloads demands a holistic approach where every layer of the technology stack, as shown in the diagram below, presents a unique opportunity to eliminate bottlenecks and maximize performance.
+## Motivation
+While the widespread adoption of AI has made powerful models accessible to a broad audience, the deep systems expertise required to execute these workloads efficiently remains concentrated within a small group of engineers. Optimizing AI workloads demands a holistic approach where every layer of the technology stack, as shown in the diagram below, presents a unique opportunity to improve outcomes. This outcome could be one or more objectives such as maximum throughput, minimized latency, or energy efficiency.
 
-- **Model & Workload:** At the very top, tuning involves adjusting hyperparameters, quantization levels (e.g., FP16 vs. INT8), and input configurations such as batch sizes, sequence lengths, and concurrency limits to maximize hardware utilization without exhausting memory.
+- **Model & Workload:** At the very top, optimization involves adjusting hyperparameters, quantization levels (e.g., FP16 vs. INT8), and input configurations such as batch sizes, sequence lengths, and concurrency limits to maximize hardware utilization without exhausting memory.
 
-- **Framework & Libraries:** The serving frameworks (like vLLM) and underlying libraries (cuBLAS, NCCL) must be tuned for specific parallelism strategies (tensor vs. pipeline parallel) and memory management (e.g., Key-Value cache allocation) to ensure efficient execution on the accelerators.
+- **Framework & Libraries:** The serving frameworks (like vLLM) and underlying libraries (cuBLAS, NCCL) must be configured for specific parallelism strategies (tensor vs. pipeline parallel) and memory management (e.g., Key-Value cache allocation) to ensure efficient execution on the accelerators.
 
 - **Runtime & OS:** The runtime environment, whether Kubernetes or bare metal, requires precise resource allocation, including CPU core pinning and NUMA-aware scheduling, to reduce latency. Operating system tuning often involves adjusting kernel parameters, enabling hugepages, and isolating cores to prevent context-switching overhead.
 
-- **Hardware & Interconnects:** At the infrastructure level, performance relies on the physical topology. This includes ensuring GPUs are paired with the closest NUMA-local NICs to minimize PCIe traversal distance, tuning NIC settings (like MTU and ring buffers) for maximum bandwidth, and configuring switch-level QoS to handle bursty RDMA traffic effectively.
+- **Hardware & Interconnects:** At the infrastructure level, the physical topology has to be efficiently utilized. This includes ensuring GPUs are paired with the closest NUMA-local NICs to minimize PCIe traversal distance, tuning NIC settings (like MTU and ring buffers) for maximum bandwidth, and configuring switch-level QoS to handle bursty RDMA traffic effectively.
 
 ```bash
 +-------------------------+------------------------------+
@@ -61,13 +58,7 @@ While the democratization of AI has made powerful models accessible to a broad a
 +--------------------------------------------------------+
 ```
 
-#### Opportunity
-The overreaching goal of Coldpress is to address this challenge by democratizing performance tuning to complement AI accessibility. It achieves this by abstracting the complexities of both static infrastructure configuration and dynamic runtime optimization, automating the flow of state and knowledge between the two.
-
-- **Abstraction of Static Tuning:** Coldpress simplifies the discovery and configuration of the "fixed" infrastructure state. For example, Coldpress codifies the required expertise regarding what to discover about the system/network (e.g. PCIe topology, buffer sizes, sleep states), how to discover it and valid modifications. 
-
-- **Abstraction of Dynamic Tuning:** Coldpress exposes high-level controls for runtime variables and lifecycle manages experiments, in order to simplify the process of iteratively discovering optimal values of tunable parameters.  
-
+The overarching goal of Coldpress is to address this challenge by abstracting the complexities of infrastructure configuration and runtime optimization. For infrastructure configuration, Coldpress codifies the necessary expertise for identifying which system/network characteristics (e.g. PCIe topology, buffer sizes, sleep states) need to be discovered, the methods for discovery, and valid modifications for tuning them. For runtime optimization, Coldpress codifies the expertise on how to manage the lifecycle of AI experiments at scale. This includes launching experiments, monitoring execution, managing storage, collecting results and logs, cleaning up resources upon completion, and maintaining the experiment records needed for future repeatability. This approach facilitates exploration of diverse research objectives, spanning performance optimization through power-efficiency analysis, across the a complex, multi-layered stack.
 
 
 
