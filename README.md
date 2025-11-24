@@ -3,7 +3,7 @@
 
 Coldpress is an extensible optimization and orchestration framework designed to manage complex AI workloads by systematically analyzing and configuring hardware and software states. It functions as a high-level job manager that executes scalable, lifecycle-managed experiments, enabling users to deploy parallel workloads while simultaneously discovering intricate system states (e.g. NUMA topology, network configurations) and dynamically adjusting system configurations and workload parameters. By abstracting the underlying runtime environment, Coldpress provides a unified interface for executing complex testing workflows across diverse infrastructures, including OpenShift, Bare metal, and Slurm, facilitating reproducible research and holistic optimization of the AI technology stack.
 
-Currently, our focus is on AI inference workloads, with a future target being to optimize AI training, as well as other HPC-like workloads.
+Our current focus is on AI inference workloads using OpenShift, with a future target being to optimize AI training, as well as other HPC-like workloads.
 
 ## Contents
 - [Motivation](#motivation)
