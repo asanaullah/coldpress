@@ -541,7 +541,7 @@ These commands can be submitted to Coldpress by sending POST requests on port 50
     - list examples
     - list nodes
     - list results <gid>
-Action:
+- Action:
   - examples: Lists subdirectories in the examples/ folder.
   - nodes: Lists discovered nodes and their GPU availability.
   - results: Lists valid output files for the tasks in the specified Job ID.
