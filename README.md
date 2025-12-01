@@ -123,10 +123,13 @@ Install the required python libraries.
 pip install -r requirements.txt
 ```
 
-Ensure you are logged into your cluster. The tool will automatically attempt to switch to the coldpress project. It is best practice to create it first if it doesn't exist.
+Ensure you are logged into your cluster, and that your target nodes have been labelled with the key-value pairing below. `node-id` must be unique for each target node. Use `oc get nodes` to get a list of available nodes in your cluster. 
 ```
-oc new-project coldpress || oc project coldpress
+oc label node <node-name> coldpress.node=<node-id>
 ```
+The experiments given in `/examples` require a minimum of two nodes with the IDs `0` and `1`. 
+
+> **Note:** In future coldpress versions, labels will be replaced with a more robust method of handling requests for specific hardware resources made in the experiment configuration.  
 
 Start the Backend Server by running the main script. This starts the API server on port 50000.
 ```bash
