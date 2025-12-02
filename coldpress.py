@@ -47,24 +47,14 @@ from parsers import (BenchmarkParser,vLLMParser,DiscoveryParser)
 # Add in storage support to get larger models, checkpointing, datasets etc 
 # End goal - large scale testing on multiple nodes
 
-def set_openshift_project():
-    current_project = oc.get_project_name()
-    coldpress_project = "coldpress"
-    if  current_project != coldpress_project:
-        print(f"Switching from project '{current_project}' to '{coldpress_project}'")
-        oc.set_project(coldpress_project)
-    else:
-        print(f"Already in target project: '{coldpress_project}'")
-
-
 def get_root_dir():
     ROOT_VAR_NAME = "COLDPRESS_ROOT_DIR"
     root_dir = os.getenv(ROOT_VAR_NAME)
     if not root_dir:
         print (
-            f"Error: The environment variable '{ROOT_VAR_NAME}' must be defined."
+            f"Warning: The environment variable '{ROOT_VAR_NAME}' is not defined. Defaulting to the current working directory."
         )
-        sys.exit(1)
+        return os.path.normpath(os.getcwd())
     if not os.path.isabs(root_dir):
         print (
             f"Error: The path for '{ROOT_VAR_NAME}' must be an absolute path.\n"
@@ -82,7 +72,6 @@ def get_root_dir():
 class ColdpressShell(object): 
     def __init__(self):
         super().__init__()   
-        set_openshift_project()
         self.meta_data = {"timestamp": datetime.now().strftime("%Y_%m_%d_%H_%M_%S"), "tmpdir": '', "root_dir": get_root_dir()}
         self.meta_data["tmpdir"] = f"/tmp/coldpress_tmpdir_{self.meta_data["timestamp"]}"
         os.makedirs(self.meta_data["tmpdir"], exist_ok=False)
