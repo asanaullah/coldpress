@@ -112,10 +112,10 @@ Coldpress facilitates a dual-role usage model defined by privilege levels. Admin
 
 
 ### Setup
-You must define the root directory for the application to locate configuration files and examples. The following assumes you have cloned the repo and are in the root dir. 
+Use the `COLDPRESS_ROOT_DIR` environment variable to define the root directory where the application looks for resources such as configuration files and examples. If this variable is not set, Coldpress defaults to the current working directory. 
 
 ```bash
-export COLDPRESS_ROOT_DIR=$(pwd)
+export COLDPRESS_ROOT_DIR=/path/to/coldpress/repo
 ```
 
 Install the required python libraries.
