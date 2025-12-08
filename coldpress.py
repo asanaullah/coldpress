@@ -21,6 +21,8 @@ from openshift_runtime import openshift_run as orun
 from openshift_runtime import openshift_cleanup as oclean
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from parsers import (BenchmarkParser,vLLMParser,DiscoveryParser)
+from models import ConfigFile
+from pydantic import ValidationError
 
 # Labels were added to nodes using coldpress.node=x
 
@@ -381,8 +383,13 @@ class ColdpressShell(object):
                 config_file = f"{self.meta_data["root_dir"]}/examples/{example}/config.yaml"
                 if not os.path.isfile(config_file):
                     return {"success": False, "data": f"Error: Cannot find the configuration for {example}."}
-                with open(config_file) as f:
-                    config = yaml.safe_load(f)
+                try:
+                    with open(config_file, "r") as f:
+                        raw_config = yaml.safe_load(f)
+                        validated_config = ConfigFile.model_validate(raw_config)
+                        config = validated_config.model_dump()
+                except ValidationError as e:
+                    return {"success": False, "data": f"Configuration validation failed: {e}"}
                 result_dir_base = os.path.join(self.meta_data["root_dir"] , "coldpress_results", f"results_{self.meta_data["timestamp"]}")
                 gid = self.create_job()
                 os.makedirs(f"{result_dir_base}/{gid}", exist_ok=True)
