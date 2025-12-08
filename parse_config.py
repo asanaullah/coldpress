@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from coldpress import models
+import models
 
 
 def parse_args():

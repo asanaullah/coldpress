@@ -5,7 +5,7 @@ import pytest
 import pydantic
 import yaml
 
-from coldpress import models
+import models
 
 valid_config = """
 benchmarks:
