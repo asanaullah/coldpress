@@ -6,12 +6,12 @@ class BenchmarkParser:
 
 
     def create_params_guidellm(self, config):
-        args = config.get("args", {})
-        port = config.get("port", 8000)
-        target_nodeip = config.get("target_nodeip", "127.0.0.1")
+        port = config.port
+        target_nodeip = config.target_nodeip or "127.0.0.1"
         command_args = f"guidellm benchmark --target \"http://{target_nodeip}:{port}\" --output-path \"/tmp/result/benchmarks.json\" --disable-progress"
-        for key, value in args.items():
-            command_args += f" --{key.replace('_', '-')} {value}"
+        for field_name in config.args.__class__.model_fields:
+            value = getattr(config.args, field_name)
+            command_args += f" --{field_name.replace('_', '-')} {value}"
         run_params = {
             "label": "guidellm-benchmark",
             "image": self.image_map["guidellm"],
@@ -21,7 +21,7 @@ class BenchmarkParser:
             "blocking": {"type": "completion"},
             "files_to_copy": ["benchmarks.json"],
             "folders_to_copy": [],
-            "log": config["log"],
+            "log": config.log,
             "env": [{"name": "HOME", "value": "/tmp"}],
             "args": [command_args],
             "command": ["bash", "-c"]

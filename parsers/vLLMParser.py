@@ -6,12 +6,13 @@ class vLLMParser:
         server_config = config["server_config"]
         model_config = config["model_config"]
         parsed_config = {}
-        parsed_config["env"] = server_config.get("framework", {}).get("env", {})
-        parsed_config["gpu"] = server_config.get("hardware", {}).get("gpu", 0)
-        parsed_config["log"] = server_config.get("log", False)
-        parsed_config["args"] = server_config.get("framework", {}).get("args", {})
-        parsed_config["args"]["model"] = model_config.get("name", 'ibm-granite/granite-3.3-8b-instruct')
-        parsed_config["args"]["max_model_len"] = model_config.get("max_model_len", 10000)
+        parsed_config["env"] = server_config.framework.env
+        parsed_config["gpu"] = server_config.hardware.gpu
+        parsed_config["log"] = server_config.log
+        # Convert Pydantic FrameworkArgs to dict for processing
+        parsed_config["args"] = server_config.framework.args.model_dump()
+        parsed_config["args"]["model"] = model_config.name
+        parsed_config["args"]["max_model_len"] = model_config.max_model_len
         port = parsed_config["args"].get("port")
         if not port:
             return {}
