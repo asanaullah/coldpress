@@ -51,10 +51,7 @@ def get_root_dir():
     ROOT_VAR_NAME = "COLDPRESS_ROOT_DIR"
     root_dir = os.getenv(ROOT_VAR_NAME)
     if not root_dir:
-        print (
-            f"Error: The environment variable '{ROOT_VAR_NAME}' must be defined."
-        )
-        sys.exit(1)
+        return os.path.normpath(os.getcwd())
     if not os.path.isabs(root_dir):
         print (
             f"Error: The path for '{ROOT_VAR_NAME}' must be an absolute path.\n"
