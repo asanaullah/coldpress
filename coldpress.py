@@ -372,8 +372,7 @@ class ColdpressShell(object):
                 try:
                     with open(config_file, "r") as f:
                         raw_config = yaml.safe_load(f)
-                        validated_config = ConfigFile.model_validate(raw_config)
-                        config = validated_config.model_dump()
+                        config = ConfigFile.model_validate(raw_config)
                 except ValidationError as e:
                     return {"success": False, "data": f"Configuration validation failed: {e}"}
                 result_dir_base = os.path.join(self.meta_data["root_dir"] , "coldpress_results", f"results_{self.meta_data["timestamp"]}")
@@ -385,10 +384,10 @@ class ColdpressShell(object):
                     job["result_dir"] = f"{result_dir_base}/{gid}"
                 task_id = 0
                 task_list = []
-                for server_config in config["model_server"]:
-                    framework = server_config["framework"]["name"]
-                    target_node = server_config["hardware"]["node"]
-                    combined_config = {"model_config": config["model"], "server_config": server_config}
+                for server_config in config.model_server:
+                    framework = server_config.framework.name
+                    target_node = server_config.hardware.node
+                    combined_config = {"model_config": config.model, "server_config": server_config}
                     params = {
                         "run_params": self.parsers[framework].parse(config=combined_config),
                         "node_id": str(target_node),
@@ -397,22 +396,23 @@ class ColdpressShell(object):
                         "target_dir": f"{result_dir_base}/{gid}/{task_id}",
                         "tag": f"{gid}-{task_id}"
                     }
-                    gpu = server_config.get("hardware", {}).get("gpu", 0)
+                    gpu = server_config.hardware.gpu
                     task_list.append({"label": f"{framework} server for Node: {params["node_id"]} ({params["node_name"]}) using GPU: {gpu}", "params": params} )
                     task_id += 1
-                for benchmark_id, benchmark in enumerate(config["benchmarks"]):
-                    name = benchmark["name"]
-                    launch_node = benchmark["launch_node"]
-                    target_node = benchmark["target_node"]
+                for benchmark_id, benchmark in enumerate(config.benchmarks):
+                    name = benchmark.name
+                    launch_node = benchmark.launch_node
+                    target_node = benchmark.target_node
                     if launch_node == target_node:
                         target_nodeip = "127.0.0.1"
                     else:
                         with open(f"{self.meta_data["root_dir"]}/system/config/network/{target_node}/network_discovery.yaml") as f:
-                            network = yaml.safe_load(f)    
+                            network = yaml.safe_load(f)
                         target_nodeip = network["ip"]["data"]["gpu_0"]["inet"]
-                    benchmark["target_nodeip"] = target_nodeip
+                    # Create new Pydantic instance with computed target_nodeip
+                    benchmark_with_ip = benchmark.model_copy(update={"target_nodeip": target_nodeip})
                     params = {
-                        "run_params": self.parsers["benchmark"].parse(benchmark=name, config=benchmark),
+                        "run_params": self.parsers["benchmark"].parse(benchmark=name, config=benchmark_with_ip),
                         "node_id": str(launch_node),
                         "node_name": self.resources["nodes"][str(launch_node)]["name"],
                         "tmpdir": f"{self.meta_data["tmpdir"]}/{gid}/{task_id}",

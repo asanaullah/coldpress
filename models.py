@@ -20,6 +20,10 @@ class BenchmarkArgs(StrictBase):
     rate_type: str
     data: str
 
+    def to_cli_options(self):
+        return " ".join(
+            f"--{name.replace('_', '-')}={getattr(self, name)}" for name in self.__class__.model_fields
+        )
 
 class Benchmark(StrictBase):
     name: str
@@ -28,6 +32,7 @@ class Benchmark(StrictBase):
     port: int
     args: BenchmarkArgs
     log: bool = True
+    target_nodeip: str = "127.0.0.1"
 
 
 class Model(StrictBase):
