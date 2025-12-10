@@ -20,6 +20,10 @@ class BenchmarkArgs(StrictBase):
     rate_type: str
     data: str
 
+    def to_cli_options(self):
+        return " ".join(
+            f"--{name.replace('_', '-')}={getattr(self, name)}" for name in self.__class__.model_fields
+        )
 
 class Benchmark(StrictBase):
     name: str

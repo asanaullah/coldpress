@@ -8,10 +8,7 @@ class BenchmarkParser:
     def create_params_guidellm(self, config):
         port = config.port
         target_nodeip = config.target_nodeip or "127.0.0.1"
-        command_args = f"guidellm benchmark --target \"http://{target_nodeip}:{port}\" --output-path \"/tmp/result/benchmarks.json\" --disable-progress"
-        for field_name in config.args.__class__.model_fields:
-            value = getattr(config.args, field_name)
-            command_args += f" --{field_name.replace('_', '-')} {value}"
+        command_args = f"guidellm benchmark --target \"http://{target_nodeip}:{port}\" --output-path \"/tmp/result/benchmarks.json\" --disable-progress {config.args.to_cli_options()}"
         run_params = {
             "label": "guidellm-benchmark",
             "image": self.image_map["guidellm"],
