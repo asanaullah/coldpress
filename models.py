@@ -28,7 +28,7 @@ class Benchmark(StrictBase):
     port: int
     args: BenchmarkArgs
     log: bool = True
-    target_nodeip: str | None = None
+    target_nodeip: str = "127.0.0.1"
 
 
 class Model(StrictBase):
