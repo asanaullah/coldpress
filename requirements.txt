@@ -2,3 +2,4 @@ pyyaml
 openshift-client
 streamlit 
 streamlit-autorefresh
+pydantic
