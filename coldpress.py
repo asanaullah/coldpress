@@ -26,9 +26,6 @@ def get_root_dir():
     ROOT_VAR_NAME = "COLDPRESS_ROOT_DIR"
     root_dir = os.getenv(ROOT_VAR_NAME)
     if not root_dir:
-        print (
-            f"Warning: The environment variable '{ROOT_VAR_NAME}' is not defined. Defaulting to the current working directory."
-        )
         return os.path.normpath(os.getcwd())
     if not os.path.isabs(root_dir):
         print (
@@ -157,14 +154,16 @@ class ColdpressShell(object):
             with job["lock"]:
                 task["status"] = "completed"
                 job["running_task"] = None
+                job["completed_tasks"].append(task)
                 if not is_cleanup_task:
-                    job["completed_tasks"].append(task)
                     job["active_resources"].append({"task_id": task["id"], "resources": ret})
             if not is_cleanup_task:
                 log_job_msg(f"Task #{task['id']} completed successfully.")
             else:
                 log_job_msg(f"Job cleanup sequence finished.")
         except Exception as e:
+            with job["lock"]:
+                job["failed_tasks"].append(task)
             if is_cleanup_task:
                 log_job_msg(f"CRITICAL: Cleanup task failed: {e}")
                 with job["lock"]:
@@ -173,7 +172,6 @@ class ColdpressShell(object):
             else:
                 with job["lock"]:
                     job["error"] = str(e)
-                    job["failed_tasks"].append(task)
                     futures = list(job.get("futures", []))
                     executor = job.get("executor")
                 log_job_msg(f"FATAL: Task #{task['id']} failed: {e}")
@@ -410,7 +408,10 @@ class ColdpressShell(object):
                 shutil.copy(f"{self.meta_data['root_dir']}/examples/{example}/config.yaml", f"{result_dir_base}/{gid}/config.yaml")
                 for task in task_list:
                     self.enqueue_task(gid, task["label"], orun, task["params"])
-                self.enqueue_task(gid, "Clean up active resources", self.cleanup_job, job)
+                cleanup_label = "Clean up active resources"
+                with job["lock"]:
+                    job["task_list"].append({"label": cleanup_label, "params": {}})
+                self.enqueue_task(gid, cleanup_label, self.cleanup_job, job)
                 self.log_msg(f"All tasks for job {gid} enqueued.")
                 return {"success": True, "data": gid}
             else:
@@ -448,8 +449,10 @@ class ColdpressShell(object):
                     if Path(file_path).exists():
                         results["-1"] = {"description": "" , "files": ["config.yaml"]}
                 for task_id, task in enumerate(task_list):
-                    params = task['params']
-                    target_dir = params["target_dir"]
+                    params = task.get('params', {})
+                    target_dir = params.get("target_dir")
+                    if not target_dir:
+                        continue
                     filenames = params["run_params"]["files_to_copy"]
                     valid_files = []
                     for filename in filenames:
@@ -550,11 +553,14 @@ class ColdpressShell(object):
             job_summaries = []
             for job in self.jobs:
                 with job["lock"]:
+                    futures_not_done = len([f for f in job["futures"] if not f.done()])
+                    is_running = 1 if job["running_task"] else 0
+                    pending_count = max(0, futures_not_done - is_running)
                     summary = {
                         "job_id": job["gid"],
                         "status": job["status"],
                         "running_task_label": job["running_task"].get("label", "None") if job["running_task"] else "None",
-                        "pending_tasks": len([f for f in job["futures"] if not f.done()]),
+                        "pending_tasks": pending_count,
                         "completed_tasks": len(job["completed_tasks"]),
                         "failed_tasks": len(job["failed_tasks"]),
                         "error": job.get("error", None)
