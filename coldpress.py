@@ -133,7 +133,10 @@ class ColdpressShell(object):
                     log_job_msg(f"[STDERR] {line}")
         with job["lock"]:
             if job["status"] == "running":
-                job["status"] = "completed"
+                if not job["failed_tasks"]: 
+                    job["status"] = "completed"
+                else:
+                    job["status"] = "failed"
 
     def run_task(self, job, task):
         def log_job_msg(msg):
