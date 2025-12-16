@@ -1,4 +1,4 @@
 pyyaml
-openshift-client
-streamlit 
+kubernetes
+streamlit
 streamlit-autorefresh

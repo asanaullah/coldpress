@@ -15,7 +15,8 @@ import contextlib
 from io import StringIO
 from pathlib import Path
 from datetime import datetime
-import openshift_client as oc
+from kubernetes import client, config
+from kubernetes.client.rest import ApiException
 from contextlib import redirect_stdout
 from openshift_runtime import openshift_run as orun
 from openshift_runtime import openshift_cleanup as oclean
@@ -68,29 +69,36 @@ def get_root_dir():
         sys.exit(1)
     return os.path.normpath(root_dir)
 
-class ColdpressShell(object): 
+class ColdpressShell(object):
     def __init__(self):
-        super().__init__()   
+        super().__init__()
+        # Initialize kubernetes client
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            config.load_kube_config()
+        self.v1 = client.CoreV1Api()
+
         self.meta_data = {"timestamp": datetime.now().strftime("%Y_%m_%d_%H_%M_%S"), "tmpdir": '', "root_dir": get_root_dir()}
         self.meta_data["tmpdir"] = f"/tmp/coldpress_tmpdir_{self.meta_data["timestamp"]}"
         os.makedirs(self.meta_data["tmpdir"], exist_ok=False)
         self.parsers = {
-            'vllm': vLLMParser(), 
-            'benchmark': BenchmarkParser(), 
-        #     'router': RouterParser(), 
-            'discovery': DiscoveryParser(), 
+            'vllm': vLLMParser(),
+            'benchmark': BenchmarkParser(),
+        #     'router': RouterParser(),
+            'discovery': DiscoveryParser(),
         #     'logging': LoggingParser()
         }
         self.jobs = []
         self.log = []
         self.resources = {"nodes": {}}
         ret = self.create_job() #job queue 0 is long running that only runs blocking tasks e.g. discover
-        nodes = oc.selector('nodes').objects()
-        for node in nodes:
-            labels = node.model.metadata.get('labels', {})
+        nodes = self.v1.list_node()
+        for node in nodes.items:
+            labels = node.metadata.labels or {}
             if "coldpress.node" in labels:
                 nodeid = labels["coldpress.node"]
-                allocatable = node.model.status.get('allocatable', {})
+                allocatable = node.status.allocatable or {}
                 gpu_count_str = allocatable.get('nvidia.com/gpu', '0')
                 try:
                     gpu_count = int(gpu_count_str)
@@ -98,12 +106,12 @@ class ColdpressShell(object):
                     gpu_count = 0
                 gpu_availability_map = {}
                 for i in range(gpu_count):
-                    gpu_id = str(i) 
-                    gpu_availability_map[gpu_id] = False 
+                    gpu_id = str(i)
+                    gpu_availability_map[gpu_id] = False
                 self.resources["nodes"][str(nodeid)] = {
-                    "name": node.name(),
+                    "name": node.metadata.name,
                     "gpus": gpu_availability_map
-                }        
+                }
         print("Coldpress Nodes:")
         print(self.resources["nodes"])
 
