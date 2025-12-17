@@ -16,7 +16,10 @@ from io import StringIO
 from pathlib import Path
 from datetime import datetime
 from kubernetes import client, config
+<<<<<<< Updated upstream
 from kubernetes.client.rest import ApiException
+=======
+>>>>>>> Stashed changes
 from contextlib import redirect_stdout
 from openshift_runtime import openshift_run as orun
 from openshift_runtime import openshift_cleanup as oclean
@@ -93,7 +96,19 @@ class ColdpressShell(object):
         self.log = []
         self.resources = {"nodes": {}}
         ret = self.create_job() #job queue 0 is long running that only runs blocking tasks e.g. discover
+<<<<<<< Updated upstream
         nodes = self.v1.list_node()
+=======
+
+        # Initialize Kubernetes client
+        try:
+            config.load_incluster_config()
+        except:
+            config.load_kube_config()
+
+        v1 = client.CoreV1Api()
+        nodes = v1.list_node()
+>>>>>>> Stashed changes
         for node in nodes.items:
             labels = node.metadata.labels or {}
             if "coldpress.node" in labels:

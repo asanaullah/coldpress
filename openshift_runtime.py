@@ -2,6 +2,7 @@ import os
 import time
 import shutil
 import tempfile
+<<<<<<< Updated upstream
 import subprocess
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
@@ -12,10 +13,21 @@ from urllib.parse import urlparse
 try:
     config.load_incluster_config()
 except config.ConfigException:
+=======
+from kubernetes import client, config
+from kubernetes.client.rest import ApiException
+from urllib.parse import urlparse
+
+# Initialize Kubernetes client
+try:
+    config.load_incluster_config()
+except:
+>>>>>>> Stashed changes
     config.load_kube_config()
 
 v1 = client.CoreV1Api()
 
+<<<<<<< Updated upstream
 def _copy_from_pod(pod_name, source_path, dest_dir, namespace="default"):
     """
     Copy data from a pod using the Kubernetes API instead of kubectl.
@@ -80,6 +92,8 @@ def _copy_from_pod(pod_name, source_path, dest_dir, namespace="default"):
         print(f"Error copying data from pod {pod_name}: {e}")
         return False
 
+=======
+>>>>>>> Stashed changes
 def _copy_results_(params, pvc_dirs, pod_log):
     run_params = params["run_params"]
     node_name = params["node_name"]
@@ -98,7 +112,7 @@ def _copy_results_(params, pvc_dirs, pod_log):
             if os.path.isdir(f"{pvc_dirs[i]}/{foldername}"):
                 if os.path.isdir(f"{target_dir}/{foldername}"):
                     shutil.rmtree(f"{target_dir}/{foldername}")
-                shutil.copytree(f"{pvc_dirs[i]}/{foldername}", f"{target_dir}/{foldername}")     
+                shutil.copytree(f"{pvc_dirs[i]}/{foldername}", f"{target_dir}/{foldername}")
 
 
 def openshift_run(params):
@@ -114,14 +128,22 @@ def openshift_run(params):
     container_volume_mounts = []
     created_pvcs = []
     pod_log = ''
+    namespace = os.environ.get("KUBERNETES_NAMESPACE", "default")
     os.makedirs(f"{params["tmpdir"]}", exist_ok=True)
     try:
         for i, mount_info in enumerate(run_params.get("ephemeral_mounts", [])):
             mount_path = mount_info["target"]
-            storage_size = mount_info.get("size", "1Gi") # Default to 1Gi if not set
+            storage_size = mount_info.get("size", "1Gi")
             volume_name = f"oneshot-pvc-mount-{i}"
+<<<<<<< Updated upstream
             pvc_name = f"{pod_name}-{volume_name}" 
             pvc = client.V1PersistentVolumeClaim(
+=======
+            pvc_name = f"{pod_name}-{volume_name}"
+            pvc = client.V1PersistentVolumeClaim(
+                api_version="v1",
+                kind="PersistentVolumeClaim",
+>>>>>>> Stashed changes
                 metadata=client.V1ObjectMeta(name=pvc_name),
                 spec=client.V1PersistentVolumeClaimSpec(
                     access_modes=["ReadWriteOnce"],
@@ -131,21 +153,30 @@ def openshift_run(params):
                 )
             )
             print(f"Creating PVC: {pvc_name} for mount {mount_path}")
+<<<<<<< Updated upstream
             v1.create_namespaced_persistent_volume_claim(namespace="default", body=pvc)
+=======
+            v1.create_namespaced_persistent_volume_claim(namespace=namespace, body=pvc)
+>>>>>>> Stashed changes
             created_pvcs.append({"name": pvc_name, "mount_path": mount_path})
-            pod_volumes.append({
-                "name": volume_name,
-                "persistentVolumeClaim": {
-                    "claimName": pvc_name
-                }
-            })
-            container_volume_mounts.append({
-                "name": volume_name,
-                "mountPath": mount_path,
-                "readOnly": False
-            })
+            pod_volumes.append(
+                client.V1Volume(
+                    name=volume_name,
+                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                        claim_name=pvc_name
+                    )
+                )
+            )
+            container_volume_mounts.append(
+                client.V1VolumeMount(
+                    name=volume_name,
+                    mount_path=mount_path,
+                    read_only=False
+                )
+            )
         for i, mount_info in enumerate(run_params.get("sys_mounts", [])):
             volume_name = f"oneshot-hostpath-mount-{i}"
+<<<<<<< Updated upstream
             pod_volumes.append({
                 "name": volume_name,
                 "hostPath": {
@@ -200,6 +231,51 @@ def openshift_run(params):
             ],
             containers=[container]
         )
+=======
+            pod_volumes.append(
+                client.V1Volume(
+                    name=volume_name,
+                    host_path=client.V1HostPathVolumeSource(
+                        path=mount_info["source"],
+                        type="Directory"
+                    )
+                )
+            )
+            container_volume_mounts.append(
+                client.V1VolumeMount(
+                    name=volume_name,
+                    mount_path=mount_info["target"],
+                    read_only=mount_info.get("read_only", False)
+                )
+            )
+
+        # Build environment variables
+        env_vars = []
+        for env_dict in run_params.get("env", []):
+            env_vars.append(
+                client.V1EnvVar(
+                    name=env_dict["name"],
+                    value=env_dict["value"]
+                )
+            )
+
+        # Build container
+        container = client.V1Container(
+            name="main",
+            image=image,
+            volume_mounts=container_volume_mounts,
+            env=env_vars,
+            args=run_params.get("args", []),
+            resources=client.V1ResourceRequirements(
+                limits=run_params.get("resources", {}).get("limits", {}),
+                requests=run_params.get("resources", {}).get("requests", {})
+            ) if run_params.get("resources") else None
+        )
+
+        if run_params.get("command"):
+            container.command = run_params["command"]
+
+>>>>>>> Stashed changes
         if blocking_type == "endpoint":
             address = blocking_params.get("address", "http://127.0.0.1:8000")
             initialDelaySeconds = blocking_params.get("initialDelaySeconds", 30)
@@ -224,42 +300,101 @@ def openshift_run(params):
                 failure_threshold=failureThreshold
             )
 
+<<<<<<< Updated upstream
         # Create pod object
         pod = client.V1Pod(
+=======
+        # Build pod spec
+        pod = client.V1Pod(
+            api_version="v1",
+            kind="Pod",
+>>>>>>> Stashed changes
             metadata=client.V1ObjectMeta(
                 name=pod_name,
                 labels={"job": pod_name}
             ),
+<<<<<<< Updated upstream
             spec=pod_spec
         )
 
         print(f"Creating pod: {pod_name}")
         v1.create_namespaced_pod(namespace="default", body=pod)
+=======
+            spec=client.V1PodSpec(
+                node_name=node_name,
+                host_network=True if run_params.get("network_mode") == "host" else False,
+                restart_policy="Never",
+                volumes=pod_volumes,
+                containers=[container],
+                security_context=client.V1PodSecurityContext(
+                    fs_group=0,
+                    run_as_user=0
+                )
+            )
+        )
+
+        print(f"Creating pod: {pod_name}")
+        v1.create_namespaced_pod(namespace=namespace, body=pod)
+>>>>>>> Stashed changes
         print(f"Waiting for pod {pod_name} based on condition: {blocking_type}")
+
         while True:
             try:
+<<<<<<< Updated upstream
                 pod_status = v1.read_namespaced_pod(name=pod_name, namespace="default")
+=======
+                pod_obj = v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+>>>>>>> Stashed changes
             except ApiException as e:
                 if e.status == 404:
                     print(f"Pod {pod_name} not found. Assuming creation failed or it was deleted.")
                     break
                 raise
 
+<<<<<<< Updated upstream
             phase = pod_status.status.phase
+=======
+            phase = pod_obj.status.phase
+>>>>>>> Stashed changes
             if blocking_type == "completion":
                 if phase in ["Succeeded", "Failed"]:
                     print(f"Pod completed with phase: {phase}")
                     if run_params.get("log", False):
+<<<<<<< Updated upstream
                         pod_log = v1.read_namespaced_pod_log(name=pod_name, namespace="default", container="main")
+=======
+                        try:
+                            pod_log = v1.read_namespaced_pod_log(
+                                name=pod_name,
+                                namespace=namespace,
+                                container="main"
+                            )
+                        except ApiException:
+                            pod_log = ''
+>>>>>>> Stashed changes
                     break
             elif blocking_type == "endpoint":
                 if phase == "Failed":
                     print(f"Pod {pod_name} failed before becoming ready.")
                     if run_params.get("log", False):
+<<<<<<< Updated upstream
                         pod_log = v1.read_namespaced_pod_log(name=pod_name, namespace="default", container="main")
                     break
                 if pod_status.status.conditions:
                     ready_condition = next((c for c in pod_status.status.conditions if c.type == "Ready"), None)
+=======
+                        try:
+                            pod_log = v1.read_namespaced_pod_log(
+                                name=pod_name,
+                                namespace=namespace,
+                                container="main"
+                            )
+                        except ApiException:
+                            pod_log = ''
+                    break
+                if pod_obj.status.conditions:
+                    ready_condition = next((c for c in pod_obj.status.conditions if c.type == "Ready"), None)
+>>>>>>> Stashed changes
                     if ready_condition and ready_condition.status == "True":
                         print(f"Pod {pod_name} is Ready at endpoint.")
                         break
@@ -267,7 +402,18 @@ def openshift_run(params):
                 if phase == "Failed" or phase == "Succeeded":
                     print(f"Pod {pod_name} {phase} before delay could complete.")
                     if run_params.get("log", False):
+<<<<<<< Updated upstream
                         pod_log = v1.read_namespaced_pod_log(name=pod_name, namespace="default", container="main")
+=======
+                        try:
+                            pod_log = v1.read_namespaced_pod_log(
+                                name=pod_name,
+                                namespace=namespace,
+                                container="main"
+                            )
+                        except ApiException:
+                            pod_log = ''
+>>>>>>> Stashed changes
                     break
                 if phase == "Running":
                     delay_seconds = blocking_params.get("delay", 10)
@@ -281,7 +427,11 @@ def openshift_run(params):
             print("Starting resource cleanup...")
             try:
                 print(f"Deleting pod: {pod_name}")
+<<<<<<< Updated upstream
                 v1.delete_namespaced_pod(name=pod_name, namespace="default")
+=======
+                v1.delete_namespaced_pod(name=pod_name, namespace=namespace)
+>>>>>>> Stashed changes
             except Exception as e:
                 print(f"Warning: Failed to delete pod {pod_name}. Error: {e}")
 
@@ -306,7 +456,14 @@ def openshift_run(params):
                 helper_pod_name = f"{pvc_name}-extractor"
                 helper_mount_point = "/data"
                 print(f"Creating helper pod: {helper_pod_name}")
+<<<<<<< Updated upstream
                 helper_pod = client.V1Pod(
+=======
+
+                helper_pod = client.V1Pod(
+                    api_version="v1",
+                    kind="Pod",
+>>>>>>> Stashed changes
                     metadata=client.V1ObjectMeta(name=helper_pod_name),
                     spec=client.V1PodSpec(
                         node_name=node_name,
@@ -317,7 +474,14 @@ def openshift_run(params):
                                 image="alpine:latest",
                                 command=["sleep", "3600"],
                                 volume_mounts=[
+<<<<<<< Updated upstream
                                     client.V1VolumeMount(name="v", mount_path=helper_mount_point)
+=======
+                                    client.V1VolumeMount(
+                                        name="v",
+                                        mount_path=helper_mount_point
+                                    )
+>>>>>>> Stashed changes
                                 ]
                             )
                         ],
@@ -328,6 +492,7 @@ def openshift_run(params):
                                     claim_name=pvc_name
                                 )
                             )
+<<<<<<< Updated upstream
                         ]
                     )
                 )
@@ -349,19 +514,59 @@ def openshift_run(params):
                 print(f"Copying data from {helper_pod_name}:{helper_mount_point} to {dest_base_dir}")
                 if not _copy_from_pod(helper_pod_name, helper_mount_point, dest_base_dir):
                     print(f"Warning: Failed to copy data from {helper_pod_name}:{helper_mount_point}")
+=======
+                        ],
+                        security_context=client.V1PodSecurityContext(
+                            fs_group=0,
+                            run_as_user=0
+                        )
+                    )
+                )
+                v1.create_namespaced_pod(namespace=namespace, body=helper_pod)
+
+                print(f"Waiting for {helper_pod_name} to be Running...")
+                while True:
+                    try:
+                        pod_obj = v1.read_namespaced_pod(name=helper_pod_name, namespace=namespace)
+                        if pod_obj.status.phase == "Running":
+                            print("Helper pod is Running.")
+                            break
+                        if pod_obj.status.phase in ["Failed", "Succeeded"]:
+                            raise Exception(f"Helper pod {helper_pod_name} failed to start.")
+                    except ApiException as e:
+                        if e.status == 404:
+                            raise Exception(f"Helper pod {helper_pod_name} failed to start.")
+                        raise
+                    time.sleep(1)
+                source_spec = f"{helper_pod_name}:{helper_mount_point}/."
+                copy_cmd = f"kubectl exec {helper_pod_name} -n {namespace} -- tar czf - -C {helper_mount_point} . --exclude lost+found | tar xzf - -C {dest_base_dir}"
+                print(f"Executing: {copy_cmd}")
+                if os.system(copy_cmd) != 0:
+                    print(f"Warning: 'kubectl exec' command failed for {source_spec}")
+>>>>>>> Stashed changes
         except Exception as e:
                 print(f"Warning: Failed to copy data {pod_name}. Error: {e}")
         finally:
             print(f"Deleting helper pod: {helper_pod_name}")
             try:
+<<<<<<< Updated upstream
                 v1.delete_namespaced_pod(name=helper_pod_name, namespace="default")
             except Exception as e:
                 print(f"Warning: Failed to delete helper pod {helper_pod_name}. Error: {e}")
+=======
+                v1.delete_namespaced_pod(name=helper_pod_name, namespace=namespace)
+            except:
+                pass
+>>>>>>> Stashed changes
             for pvc_info in created_pvcs:
                 pvc_name = pvc_info["name"]
                 try:
                     print(f"Deleting PVC: {pvc_name}")
+<<<<<<< Updated upstream
                     v1.delete_namespaced_persistent_volume_claim(name=pvc_name, namespace="default")
+=======
+                    v1.delete_namespaced_persistent_volume_claim(name=pvc_name, namespace=namespace)
+>>>>>>> Stashed changes
                 except Exception as e:
                     print(f"Warning: Failed to delete PVC {pvc_name}. Error: {e}")
         _copy_results_(params, dest_base_dir_list, pod_log)
@@ -375,13 +580,32 @@ def openshift_cleanup(params, resources):
     tag = params["tag"]
     pod_name = resources.get("pod_name")
     pod_log = ''
+    namespace = os.environ.get("KUBERNETES_NAMESPACE", "default")
+
     if pod_name:
         if run_params.get("log", False):
+<<<<<<< Updated upstream
             pod_log = v1.read_namespaced_pod_log(name=pod_name, namespace="default", container="main")
         print(f"Deleting pod: {pod_name}")
         v1.delete_namespaced_pod(name=pod_name, namespace="default")
+=======
+            try:
+                pod_log = v1.read_namespaced_pod_log(
+                    name=pod_name,
+                    namespace=namespace,
+                    container="main"
+                )
+            except ApiException:
+                pod_log = ''
+        print(f"Deleting pod: {pod_name}")
+        try:
+            v1.delete_namespaced_pod(name=pod_name, namespace=namespace)
+        except:
+            pass
+>>>>>>> Stashed changes
     else:
-        pod_name =  tag + "-" + node_name + "-" + run_params.get("label", "unlabeled_pod")
+        pod_name = tag + "-" + node_name + "-" + run_params.get("label", "unlabeled_pod")
+
     print("Copying data for pvcs...")
     dest_base_dir_list = []
     for pvc_name in resources.get("pvc", []):
@@ -395,7 +619,14 @@ def openshift_cleanup(params, resources):
             helper_pod_name = f"{pvc_name}-extractor"
             helper_mount_point = "/data"
             print(f"Creating helper pod: {helper_pod_name}")
+<<<<<<< Updated upstream
             helper_pod = client.V1Pod(
+=======
+
+            helper_pod = client.V1Pod(
+                api_version="v1",
+                kind="Pod",
+>>>>>>> Stashed changes
                 metadata=client.V1ObjectMeta(name=helper_pod_name),
                 spec=client.V1PodSpec(
                     node_name=node_name,
@@ -406,7 +637,14 @@ def openshift_cleanup(params, resources):
                             image="alpine:latest",
                             command=["sleep", "3600"],
                             volume_mounts=[
+<<<<<<< Updated upstream
                                 client.V1VolumeMount(name="v", mount_path=helper_mount_point)
+=======
+                                client.V1VolumeMount(
+                                    name="v",
+                                    mount_path=helper_mount_point
+                                )
+>>>>>>> Stashed changes
                             ]
                         )
                     ],
@@ -417,6 +655,7 @@ def openshift_cleanup(params, resources):
                                 claim_name=pvc_name
                             )
                         )
+<<<<<<< Updated upstream
                     ]
                 )
             )
@@ -443,14 +682,53 @@ def openshift_cleanup(params, resources):
                 v1.delete_namespaced_pod(name=helper_pod_name, namespace="default")
             except Exception as e:
                 print(f"Warning: Failed to delete helper pod {helper_pod_name}. Error: {e}")
+=======
+                    ],
+                    security_context=client.V1PodSecurityContext(
+                        fs_group=0,
+                        run_as_user=0
+                    )
+                )
+            )
+            v1.create_namespaced_pod(namespace=namespace, body=helper_pod)
+
+            print(f"Waiting for {helper_pod_name} to be Running...")
+            while True:
+                try:
+                    pod_obj = v1.read_namespaced_pod(name=helper_pod_name, namespace=namespace)
+                    if pod_obj.status.phase == "Running":
+                        print("Helper pod is Running.")
+                        break
+                    if pod_obj.status.phase in ["Failed", "Succeeded"]:
+                        raise Exception(f"Helper pod {helper_pod_name} failed to start.")
+                except ApiException as e:
+                    if e.status == 404:
+                        raise Exception(f"Helper pod {helper_pod_name} failed to start.")
+                    raise
+                time.sleep(1)
+            source_spec = f"{helper_pod_name}:{helper_mount_point}/."
+            copy_cmd = f"kubectl exec {helper_pod_name} -n {namespace} -- tar czf - -C {helper_mount_point} . --exclude lost+found | tar xzf - -C {dest_base_dir}"
+            print(f"Executing: {copy_cmd}")
+            if os.system(copy_cmd) != 0:
+                print(f"Warning: 'kubectl exec' command failed for {source_spec}")
+            print(f"Deleting helper pod: {helper_pod_name}")
+            try:
+                v1.delete_namespaced_pod(name=helper_pod_name, namespace=namespace)
+            except:
+                pass
+>>>>>>> Stashed changes
         except Exception as e:
             print(f"Error: {e}")
         finally:
             try:
                 print(f"Deleting PVC: {pvc_name}")
+<<<<<<< Updated upstream
                 v1.delete_namespaced_persistent_volume_claim(name=pvc_name, namespace="default")
+=======
+                v1.delete_namespaced_persistent_volume_claim(name=pvc_name, namespace=namespace)
+>>>>>>> Stashed changes
             except Exception as e:
                 print(f"Warning: Failed to delete PVC {pvc_name}. Error: {e}")
     _copy_results_(params, dest_base_dir_list, pod_log)
     shutil.rmtree(params["tmpdir"], ignore_errors=True)
-    return 
+    return
