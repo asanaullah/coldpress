@@ -82,7 +82,7 @@ class ColdpressShell(object):
                 self.resources["nodes"][str(nodeid)] = {
                     "name": node.metadata.name,
                     "gpus": gpu_availability_map
-                }        
+                }
         print("Coldpress Nodes:")
         print(self.resources["nodes"])
 
