@@ -5,49 +5,25 @@ import copy
 import yaml
 import time
 import json
-import queue
 import shlex
 import shutil
-import asyncio
 import tempfile
 import threading
 import contextlib
 from io import StringIO
 from pathlib import Path
 from datetime import datetime
-import openshift_client as oc
+from kubernetes import client, config
+from kubernetes.client.rest import ApiException
+from concurrent.futures import wait
 from contextlib import redirect_stdout
+from concurrent.futures import ThreadPoolExecutor
 from openshift_runtime import openshift_run as orun
 from openshift_runtime import openshift_cleanup as oclean
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from parsers import (BenchmarkParser,vLLMParser,DiscoveryParser)
 from models import ConfigFile
 from pydantic import ValidationError
-
-# Labels were added to nodes using coldpress.node=x
-
-# Todo
-# fix path create - use os.path.join()
-# convert job logging to realtime
-# add cleanup for failed tasks
-# remove code duplication
-# make error handling consistent
-# add error checks e.g. if None is returned for a parser call
-# fix the copy_cmd in openshift_runtime
-# validate that gpu orderings seen at different points is consistent
-# add checks in case jobs are getting scheduled for a resource already in use by a lower gid
-# better way to pick ip to use for benchmark if launch_node != target_node
-# add the validate_config helper function back in 
-# check if task is in completed list before running the do_cat function
-# guidellm:latest has issues, :nightly works fine - but unable to detect the csv extension for output (worked for baremetal) - using json for now
-# can launch multiple jobs in parallel that will run, but guidellm has issues with being run on the same machine twice at the same time
-# add in shutdown_all function
-# fix demsg
-# streamling the cat function so we can get logs as well (or make it part of dmesg?)
-# improve job 0 so that it can safely handle potentially disruptive tasks like modifying hardware config that impacts all users
-# Support resource request instead of specifying  - instead of prespecifying node, a third party service is asked to get a node (and gpu id), and this is plugged into the example config
-# Add in storage support to get larger models, checkpointing, datasets etc 
-# End goal - large scale testing on multiple nodes
+from parsers import (BenchmarkParser,vLLMParser,DiscoveryParser)
 
 def get_root_dir():
     ROOT_VAR_NAME = "COLDPRESS_ROOT_DIR"
@@ -68,29 +44,32 @@ def get_root_dir():
         sys.exit(1)
     return os.path.normpath(root_dir)
 
-class ColdpressShell(object): 
+class ColdpressShell(object):
     def __init__(self):
         super().__init__()   
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            config.load_kube_config()
+        self.v1 = client.CoreV1Api()
         self.meta_data = {"timestamp": datetime.now().strftime("%Y_%m_%d_%H_%M_%S"), "tmpdir": '', "root_dir": get_root_dir()}
-        self.meta_data["tmpdir"] = f"/tmp/coldpress_tmpdir_{self.meta_data["timestamp"]}"
+        self.meta_data["tmpdir"] = f"/tmp/coldpress_tmpdir_{self.meta_data['timestamp']}"
         os.makedirs(self.meta_data["tmpdir"], exist_ok=False)
         self.parsers = {
             'vllm': vLLMParser(), 
-            'benchmark': BenchmarkParser(), 
-        #     'router': RouterParser(), 
-            'discovery': DiscoveryParser(), 
-        #     'logging': LoggingParser()
+            'benchmark': BenchmarkParser(),  
+            'discovery': DiscoveryParser()
         }
         self.jobs = []
         self.log = []
         self.resources = {"nodes": {}}
-        ret = self.create_job() #job queue 0 is long running that only runs blocking tasks e.g. discover
-        nodes = oc.selector('nodes').objects()
-        for node in nodes:
-            labels = node.model.metadata.get('labels', {})
+        ret = self.create_job() 
+        nodes = self.v1.list_node()
+        for node in nodes.items:
+            labels = node.metadata.labels or {}
             if "coldpress.node" in labels:
                 nodeid = labels["coldpress.node"]
-                allocatable = node.model.status.get('allocatable', {})
+                allocatable = node.status.allocatable or {}
                 gpu_count_str = allocatable.get('nvidia.com/gpu', '0')
                 try:
                     gpu_count = int(gpu_count_str)
@@ -98,10 +77,10 @@ class ColdpressShell(object):
                     gpu_count = 0
                 gpu_availability_map = {}
                 for i in range(gpu_count):
-                    gpu_id = str(i) 
-                    gpu_availability_map[gpu_id] = False 
+                    gpu_id = str(i)
+                    gpu_availability_map[gpu_id] = False
                 self.resources["nodes"][str(nodeid)] = {
-                    "name": node.name(),
+                    "name": node.metadata.name,
                     "gpus": gpu_availability_map
                 }        
         print("Coldpress Nodes:")
@@ -112,143 +91,162 @@ class ColdpressShell(object):
         timestamp_tag = now.strftime("%Y%m%d%H%M%S%f")
         self.log.append(f'[{timestamp_tag}] [Console] {msg}')
 
-    async def job_worker(self, job):
-        def log_job_msg(job, msg):
+    def cleanup_job(self, job):
+        def log_job_msg(msg):
             gid = job.get("gid", -1)
             now = datetime.now()
             timestamp_tag = now.strftime("%Y%m%d%H%M%S%f")
             with job["lock"]:
-                job["log"].append(f'[{timestamp_tag}] [Job {gid}] {msg}')
-        def flush_queue(job):
-            while not job["job_queue"].empty():
-                try:
-                    job["job_queue"].get_nowait()
-                    job["job_queue"].task_done()
-                except asyncio.QueueEmpty:
-                    break
-            log_job_msg(job, f"Job queue has been flushed due to a failure.")
-        log_job_msg(job, "Job worker is listening for tasks...")
-        while True:
-            task = await job["job_queue"].get()
-            if task is None: # Use None as a sentinel value to stop - THIS IS IMPORTANT FOR CLEANUP OF JOB
-                break
-            log_job_msg(job, f"Dequeued task #{task['id']}: {task['label']}")
-            with job["lock"]:
-                job["running_task"] = task
-            stdout_buffer = io.StringIO()
-            stderr_buffer = io.StringIO()
-            try:
-                method_to_call = task['method']
-                with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-                    if asyncio.iscoroutinefunction(method_to_call):
-                        ret = await method_to_call(*task['args'], **task['kwargs'])
-                    else:
-                        ret = method_to_call(*task['args'], **task['kwargs'])
-                with job["lock"]:
-                    task['status'] = 'completed'
-                    job["completed_tasks"].append(task)
-                    job["running_task"] = ''
-                    job["active_resources"].append({"task_id": task['id'], "resources": ret})
-                log_job_msg(job, f"Task #{task['id']} completed successfully.")
-            except Exception as e:
-                with job["lock"]:
-                    job["status"] = "failed"
-                    job["error"] = str(e)
-                    job["failed_tasks"].append(task)
-                log_job_msg(job, f"FATAL: Task #{task['id']} failed: {e}")
-                flush_queue(job)
-                log_job_msg(job, f"System shutdown initiated due to job failure.")
-                break
-            finally:
-                stdout_val = stdout_buffer.getvalue().strip()
-                stderr_val = stderr_buffer.getvalue().strip()
-                if stdout_val:
-                    log_job_msg(job, f"[STDOUT] --- Task {task['id']} Output ---")
-                    for line in stdout_val.split('\n'):
-                        log_job_msg(job, f"[STDOUT] {line}")
-                if stderr_val:
-                    log_job_msg(job, f"[STDERR] --- Task {task['id']} Output ---")
-                    for line in stderr_val.split('\n'):
-                        log_job_msg(job, f"[STDERR] {line}")
-                job["job_queue"].task_done()
-        stdout_buffer.seek(0)
-        stdout_buffer.truncate(0)
-        stderr_buffer.seek(0)
-        stderr_buffer.truncate(0)
-        for entry in job["active_resources"]:
+                job["log"].append(f"[{timestamp_tag}] [Job {gid}] {msg}")
+        with job["lock"]:
+            if job.get("cleanup_started"):
+                return
+            job["cleanup_started"] = True
+            active_resources = list(job["active_resources"])
+            completed_tasks = list(job["completed_tasks"])
+        stdout_buffer = io.StringIO()
+        stderr_buffer = io.StringIO()
+        for entry in active_resources:
             task_id = entry["task_id"]
             resources = entry["resources"]
             if not resources:
                 continue
             params = {}
-            for task in job["completed_tasks"]:
+            for task in completed_tasks:
                 if task["id"] == task_id:
-                    params = task['args'][0]
+                    params = task["args"][0]
                     break
             if not params:
                 continue
-            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-                oclean(params, resources)    
+            stdout_buffer.seek(0)
+            stdout_buffer.truncate(0)
+            stderr_buffer.seek(0)
+            stderr_buffer.truncate(0)
+            try:
+                with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+                    oclean(params, resources)
+            except Exception as e:
+                log_job_msg(f"Cleanup for Task {task_id} raised: {e}")
             stdout_val = stdout_buffer.getvalue().strip()
             stderr_val = stderr_buffer.getvalue().strip()
             if stdout_val:
-                log_job_msg(job, f"[STDOUT] --- Cleanup for Task {task_id} Output ---")
-                for line in stdout_val.split('\n'):
-                    log_job_msg(job, f"[STDOUT] {line}")
+                log_job_msg(f"[STDOUT] --- Cleanup for Task {task_id} Output ---")
+                for line in stdout_val.split("\n"):
+                    log_job_msg(f"[STDOUT] {line}")
             if stderr_val:
-                log_job_msg(job, f"[STDERR] --- Cleanup for Task {task_id} Output ---")
-                for line in stderr_val.split('\n'):
-                    log_job_msg(job, f"[STDERR] {line}")
+                log_job_msg(f"[STDERR] --- Cleanup for Task {task_id} Output ---")
+                for line in stderr_val.split("\n"):
+                    log_job_msg(f"[STDERR] {line}")
         with job["lock"]:
-            job["status"] = "completed"
+            if job["status"] == "running":
+                if not job["failed_tasks"]: 
+                    job["status"] = "completed"
+                else:
+                    job["status"] = "failed"
 
-    def start_job_queue_worker(self, job):
-        def run_loop():
-            job["loop"] = asyncio.new_event_loop()
-            asyncio.set_event_loop(job["loop"])
-            job["started_event"].set()
-            job["loop"].run_until_complete(self.job_worker(job))
-        job["worker_thread"] = threading.Thread(target=run_loop, daemon=True)
-        job["worker_thread"].start()
+    def run_task(self, job, task):
+        def log_job_msg(msg):
+            gid = job.get("gid", -1)
+            now = datetime.now()
+            timestamp_tag = now.strftime("%Y%m%d%H%M%S%f")
+            with job["lock"]:
+                job["log"].append(f"[{timestamp_tag}] [Job {gid}] {msg}")
+        gid = job.get("gid", -1)
+        is_cleanup_task = task["method"] == self.cleanup_job
+        stdout_buffer = io.StringIO()
+        stderr_buffer = io.StringIO()
+        with job["lock"]:
+            job["running_task"] = task
+        try:
+            method_to_call = task["method"]
+            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+                ret = method_to_call(*task["args"], **task["kwargs"])
+            with job["lock"]:
+                task["status"] = "completed"
+                job["running_task"] = None
+                job["completed_tasks"].append(task)
+                if not is_cleanup_task:
+                    job["active_resources"].append({"task_id": task["id"], "resources": ret})
+            if not is_cleanup_task:
+                log_job_msg(f"Task #{task['id']} completed successfully.")
+            else:
+                log_job_msg(f"Job cleanup sequence finished.")
+        except Exception as e:
+            with job["lock"]:
+                job["failed_tasks"].append(task)
+            if is_cleanup_task:
+                log_job_msg(f"CRITICAL: Cleanup task failed: {e}")
+                with job["lock"]:
+                    job["status"] = "failed"
+                    job["running_task"] = None
+            else:
+                with job["lock"]:
+                    job["error"] = str(e)
+                    futures = list(job.get("futures", []))
+                    executor = job.get("executor")
+                log_job_msg(f"FATAL: Task #{task['id']} failed: {e}")
+                log_job_msg("Flushing remaining tasks for this job...")
+                for f in futures:
+                    was_cancelled = f.cancel()
+                    if not was_cancelled and f.running():
+                        self.log_msg(f"Warning: A task is currently running and cannot be cancelled immediately. It will continue until completion.")
+                ret = self.enqueue_task(gid, "Stopping/Cleanup", self.cleanup_job, job)
+                if ret == -1:
+                    log_job_msg("WARNING: Could not schedule cleanup. Running cleanup inline immediately.")
+            try:
+                self.cleanup_job(job)
+            except Exception as cleanup_e:
+                log_job_msg(f"CRITICAL: Inline cleanup failed: {cleanup_e}")
+                with job["lock"]:
+                    job["status"] = "failed"
+        finally:
+            stdout_val = stdout_buffer.getvalue().strip()
+            stderr_val = stderr_buffer.getvalue().strip()
+            if stdout_val:
+                log_job_msg(f"[STDOUT] --- Task {task['id']} Output ---")
+                for line in stdout_val.split("\n"):
+                    log_job_msg(f"[STDOUT] {line}")
+            if stderr_val:
+                log_job_msg(f"[STDERR] --- Task {task['id']} Output ---")
+                for line in stderr_val.split("\n"):
+                    log_job_msg(f"[STDERR] {line}")
+
 
     def create_job(self):
-        gid = len(self.jobs) 
+        gid = len(self.jobs)
         job = {
             "gid": gid,
-            "job_queue": asyncio.Queue(),
             "tasks": 0,
             "completed_tasks": [],
             "failed_tasks": [],
             "result_dir": None,
-            "loop": None,
-            "worker_thread": None,
-            "running_task": "",
+            "running_task": None,
             "log": [],
-            "status": "running", 
-            "error": None,  
-            "started_event": threading.Event(),
+            "status": "running",
+            "error": None,
             "lock": threading.Lock(),
             "active_resources": [],
-            "task_list": []
+            "task_list": [],
+            "executor": ThreadPoolExecutor(max_workers=1),
+            "futures": [],  
+            "cleanup_started": False
         }
         self.jobs.append(job)
-        self.start_job_queue_worker(job)
-        self.log_msg(f"Job {gid} created and asynchronous job worker started.")
+        self.log_msg(f"Job {gid} created.")
         return gid
-
 
     def enqueue_task(self, job_gid, label, method_name, *args, **kwargs):
         job = self.jobs[job_gid]
-        if not job["worker_thread"].is_alive():
-            self.log_msg(f"Error: Job worker for job # {job['gid']} is not running. Cannot enqueue task.")
-            return
-        job["started_event"].wait()
         with job["lock"]:
             if job["status"] != "running":
                 self.log_msg(f"Error: Job {job_gid} is not running (status: {job['status']}). Cannot enqueue.")
                 return
+            if job.get("cleanup_started"):
+                self.log_msg(f"Job {job_gid}: cleanup already started; refusing to enqueue.")
+                return -1
             task_id = job["tasks"]
             job["tasks"] += 1
+            executor = job.get("executor")
         task = {
             "id": task_id,
             "label": label,
@@ -257,7 +255,15 @@ class ColdpressShell(object):
             "kwargs": kwargs,
             "status": "pending"
         }
-        job["loop"].call_soon_threadsafe(job["job_queue"].put_nowait, task)
+        try:
+            future = executor.submit(self.run_task, job, task)
+        except RuntimeError as e:
+            self.log_msg(f"Error: Executor for job {job_gid} cannot accept new tasks: {e}")
+            with job["lock"]:
+                job["tasks"] -= 1
+            return -1
+        with job["lock"]:
+            job["futures"].append(future)
         self.log_msg(f"Enqueued task #{job['gid']}-{task_id}: {task['label']}")
         return task_id
 
@@ -283,15 +289,15 @@ class ColdpressShell(object):
                 "run_params": self.parsers["discovery"].parse(discovery_type=discovery_type, config=config),
                 "node_id": str(target_node),
                 "node_name": self.resources["nodes"][str(target_node)]["name"],
-                "tmpdir": f"{self.meta_data["tmpdir"]}/0/discover",
+                "tmpdir": f"{self.meta_data['tmpdir']}/0/discover",
                 "target_dir": self.meta_data["root_dir"] + "/system/config/network/" +  target_node,
                 "tag": "0-discover" #we are not sure what the task id will be in job 0, but it only runs blocking tasks so we can use func name as tag
             }
             if params.get("run_params",{}).get("blocking",{}).get("type", '') != "completion":
                 return {"success": False, "data": "Error: Unsupported blocking type for network discovery - this is a bug in the tool, not the user input."}
             with self.jobs[0]["lock"]:
-                self.jobs[0]["task_list"].append({"label": f"network discovery for Node: {params["node_id"]} ({params["node_name"]})", "params": params} )
-            task_id = self.enqueue_task(0, f"network discovery for Node: {params["node_id"]} ({params["node_name"]})", orun, params)
+                self.jobs[0]["task_list"].append({"label": f"network discovery for Node: {params['node_id']} ({params['node_name']})", "params": params} )
+            task_id = self.enqueue_task(0, f"network discovery for Node: {params['node_id']} ({params['node_name']})", orun, params)
             return {"success": True, "data": task_id}
         else:
             return {"success": False, "data": "Error: Unsupported discovery type."}
@@ -304,60 +310,21 @@ class ColdpressShell(object):
             job = self.jobs[gid]
             with job["lock"]:
                 if job["status"] != "running":
-                    return {"success": False, "data": f"Error: Job {gid} is already stopped (status: {job['status']})."}
-                if not job["worker_thread"] or not job["worker_thread"].is_alive():
-                    return {"success": False, "data": f"Error: Job {gid} worker is not running."}
-            job["loop"].call_soon_threadsafe(job["job_queue"].put_nowait, None)
-            self.log_msg(f"Sent stop signal to job {gid}. It will clean up and terminate after its current task.")
+                     return {"success": False, "data": f"Error: Job {gid} is not running."}
+                futures = list(job.get("futures", []))
+            for f in futures:
+                was_cancelled = f.cancel()
+                if not was_cancelled and f.running():
+                    self.log_msg(f"Warning: A task is currently running and cannot be cancelled immediately. It will continue until completion.")
+                ret = self.enqueue_task(gid, "Stopping/Cleanup", self.cleanup_job, job)
+                if ret == -1:
+                     return {"success": False, "data": f"Job {gid}: Cleanup command could not be scheduled."}
             return {"success": True, "data": f"Stop signal sent to job {gid}."}
         except (ValueError, TypeError):
             return {"success": False, "data": f"Error: Invalid job ID '{arg}'. Must be an integer."}
         except Exception as e:
             return {"success": False, "data": f"An error occurred: {e}"}
 
-    def do_vllm_test(self, arg):
-        gpu = int(arg) if arg else 0
-        try:
-            target_node = 0
-            gid = self.create_job()
-            config = {
-                    "server_config": {
-                        "framework":{
-                            "name": "vllm",
-                            "env": {
-                                "VLLM_USE_V1": 1
-                            },
-                            "args": {
-                                "port": 8000,
-                                "gpu_memory_utilization": 0.6
-                            }
-                        },
-                        "hardware": {"node": target_node, "gpu": gpu},
-                        "log": True
-                    }, 
-                    "model_config": 
-                        {"model": 'ibm-granite/granite-3.3-8b-instruct', 
-                        "max_model_len": 10000
-                        }
-                    }
-            params = {
-                    "run_params": self.parsers["vllm"].parse(config=config),
-                    "node_id": str(target_node),
-                    "node_name": self.resources["nodes"][str(target_node)]["name"],
-                    "tmpdir": f"{self.meta_data["tmpdir"]}/{gid}/0",
-                    "target_dir": self.meta_data["root_dir"] + "/coldpress_results/" +  str(target_node),
-                    "tag": f"{gid}-{0}"
-                }
-            with self.jobs[gid]["lock"]:
-                self.jobs[gid]["task_list"].append({"label": f"vllm server for Node: {params["node_id"]} ({params["node_name"]})", "params": params} )
-            task_id = self.enqueue_task(gid, f"vllm server for Node: {params["node_id"]} ({params["node_name"]})", orun, params)
-            return {"success": True, "data": gid}
-        except Exception as e:
-            return {"success": False, "data": f"An error occurred: {e}"}
-
-
-#ALSO have a dump_params function that is scheduled just before the None task. this will dump out the params for each task in its results folder
-# every task launched 0 or 1 pods. so as long as pods have a prefix of {gid}-{task_id}, the naming will always be unique
     def do_launch(self, arg):
         try:
             args = shlex.split(arg)
@@ -365,8 +332,10 @@ class ColdpressShell(object):
                 return {"success": False, "data": "Error: Please specify a command."}
             cmd = args[0].lower()
             if cmd == "example":
+                if len(args) < 2:
+                    return {"success": False, "data": "Error: Please specify an example name. Usage: launch example <name>"}
                 example = args[1].lower()
-                config_file = f"{self.meta_data["root_dir"]}/examples/{example}/config.yaml"
+                config_file = f"{self.meta_data['root_dir']}/examples/{example}/config.yaml"
                 if not os.path.isfile(config_file):
                     return {"success": False, "data": f"Error: Cannot find the configuration for {example}."}
                 try:
@@ -375,7 +344,7 @@ class ColdpressShell(object):
                         config = ConfigFile.model_validate(raw_config)
                 except ValidationError as e:
                     return {"success": False, "data": f"Configuration validation failed: {e}"}
-                result_dir_base = os.path.join(self.meta_data["root_dir"] , "coldpress_results", f"results_{self.meta_data["timestamp"]}")
+                result_dir_base = os.path.join(self.meta_data["root_dir"] , "coldpress_results", f"results_{self.meta_data['timestamp']}")
                 gid = self.create_job()
                 os.makedirs(f"{result_dir_base}/{gid}", exist_ok=True)
                 self.log_msg(f"Result directory: {result_dir_base}/{gid}")
@@ -392,12 +361,12 @@ class ColdpressShell(object):
                         "run_params": self.parsers[framework].parse(config=combined_config),
                         "node_id": str(target_node),
                         "node_name": self.resources["nodes"][str(target_node)]["name"],
-                        "tmpdir": f"{self.meta_data["tmpdir"]}/{gid}/{task_id}",
+                        "tmpdir": f"{self.meta_data['tmpdir']}/{gid}/{task_id}",
                         "target_dir": f"{result_dir_base}/{gid}/{task_id}",
                         "tag": f"{gid}-{task_id}"
                     }
                     gpu = server_config.hardware.gpu
-                    task_list.append({"label": f"{framework} server for Node: {params["node_id"]} ({params["node_name"]}) using GPU: {gpu}", "params": params} )
+                    task_list.append({"label": f"{framework} server for Node: {params['node_id']} ({params['node_name']}) using GPU: {gpu}", "params": params} )
                     task_id += 1
                 for benchmark_id, benchmark in enumerate(config.benchmarks):
                     name = benchmark.name
@@ -406,20 +375,19 @@ class ColdpressShell(object):
                     if launch_node == target_node:
                         target_nodeip = "127.0.0.1"
                     else:
-                        with open(f"{self.meta_data["root_dir"]}/system/config/network/{target_node}/network_discovery.yaml") as f:
-                            network = yaml.safe_load(f)
+                        with open(f"{self.meta_data['root_dir']}/system/config/network/{target_node}/network_discovery.yaml") as f:
+                            network = yaml.safe_load(f)    
                         target_nodeip = network["ip"]["data"]["gpu_0"]["inet"]
-                    # Create new Pydantic instance with computed target_nodeip
                     benchmark_with_ip = benchmark.model_copy(update={"target_nodeip": target_nodeip})
                     params = {
                         "run_params": self.parsers["benchmark"].parse(benchmark=name, config=benchmark_with_ip),
                         "node_id": str(launch_node),
                         "node_name": self.resources["nodes"][str(launch_node)]["name"],
-                        "tmpdir": f"{self.meta_data["tmpdir"]}/{gid}/{task_id}",
+                        "tmpdir": f"{self.meta_data['tmpdir']}/{gid}/{task_id}",
                         "target_dir": f"{result_dir_base}/{gid}/{task_id}",
                         "tag": f"{gid}-{task_id}"
                     }
-                    task_list.append({"label": f"Benchmark {benchmark_id+1}: {name} run on Node: {params["node_id"]} ({params["node_name"]})", "params": params} )
+                    task_list.append({"label": f"Benchmark {benchmark_id+1}: {name} run on Node: {params['node_id']} ({params['node_name']})", "params": params} )
                     task_id += 1
                 # CAN RUN CHECKS HERE FOR RESOURCE CONFLICTS BEFORE LAUNCHING
                 with job["lock"]:
@@ -438,11 +406,11 @@ class ColdpressShell(object):
                 network_dump = {}
                 for node_id in self.resources["nodes"].keys():
                     try:
-                        with open(f"{self.meta_data["root_dir"]}/system/config/network/{node_id}/network_discovery.yaml") as f:
+                        with open(f"{self.meta_data['root_dir']}/system/config/network/{node_id}/network_discovery.yaml") as f:
                             network = yaml.safe_load(f) 
                         network_dump[node_id] = network
                     except:
-                        self.log_msg(f"No network data found for Node {node_id} in {self.meta_data["root_dir"]}/system/config/network/")
+                        self.log_msg(f"No network data found for Node {node_id} in {self.meta_data['root_dir']}/system/config/network/")
                         continue
                 with open(f"{result_dir_base}/{gid}/network.yaml", 'w') as f:
                     yaml.dump(
@@ -451,11 +419,14 @@ class ColdpressShell(object):
                         sort_keys=False, 
                         default_flow_style=False
                     )
-                shutil.copy(f"{self.meta_data["root_dir"]}/examples/{example}/config.yaml", f"{result_dir_base}/{gid}/config.yaml")
+                shutil.copy(f"{self.meta_data['root_dir']}/examples/{example}/config.yaml", f"{result_dir_base}/{gid}/config.yaml")
                 for task in task_list:
                     self.enqueue_task(gid, task["label"], orun, task["params"])
-                self.log_msg(f"All tasks for job {gid} enqueued. Sending stop sentinel.")
-                job["loop"].call_soon_threadsafe(job["job_queue"].put_nowait, None)
+                cleanup_label = "Clean up active resources"
+                with job["lock"]:
+                    job["task_list"].append({"label": cleanup_label, "params": {}})
+                self.enqueue_task(gid, cleanup_label, self.cleanup_job, job)
+                self.log_msg(f"All tasks for job {gid} enqueued.")
                 return {"success": True, "data": gid}
             else:
                 return {"success": False, "data": "Error: Invalid launch command."}
@@ -492,8 +463,10 @@ class ColdpressShell(object):
                     if Path(file_path).exists():
                         results["-1"] = {"description": "" , "files": ["config.yaml"]}
                 for task_id, task in enumerate(task_list):
-                    params = task['params']
-                    target_dir = params["target_dir"]
+                    params = task.get('params', {})
+                    target_dir = params.get("target_dir")
+                    if not target_dir:
+                        continue
                     filenames = params["run_params"]["files_to_copy"]
                     valid_files = []
                     for filename in filenames:
@@ -588,17 +561,20 @@ class ColdpressShell(object):
             return {"success": True, "data": status}
         except Exception as e:
                 return {"success": False, "data": f"An error occurred: {e}"}
-
+#
     def do_status(self, arg):
         if not arg:
             job_summaries = []
             for job in self.jobs:
                 with job["lock"]:
+                    futures_not_done = len([f for f in job["futures"] if not f.done()])
+                    is_running = 1 if job["running_task"] else 0
+                    pending_count = max(0, futures_not_done - is_running)
                     summary = {
                         "job_id": job["gid"],
                         "status": job["status"],
                         "running_task_label": job["running_task"].get("label", "None") if job["running_task"] else "None",
-                        "pending_tasks": job["job_queue"].qsize(),
+                        "pending_tasks": pending_count,
                         "completed_tasks": len(job["completed_tasks"]),
                         "failed_tasks": len(job["failed_tasks"]),
                         "error": job.get("error", None)
@@ -667,7 +643,26 @@ class ColdpressShell(object):
 
         
     def shutdown_all(self):
-        
+        print("Shutting down all job executors...")
+        cleanup_futures = []
+        for job in self.jobs:
+            gid = job.get("gid", -1)
+            with job["lock"]:
+                if job["status"] != "running":
+                    continue
+                futures = list(job.get("futures", []))
+            for f in futures:
+                was_cancelled = f.cancel()
+                if not was_cancelled and f.running():
+                    self.log_msg(f"Warning: A task is currently running and cannot be cancelled immediately. It will continue until completion.")
+                ret = self.enqueue_task(gid, "Stopping/Cleanup", self.cleanup_job, job)
+            task_id = self.enqueue_task(gid, "Stopping/Cleanup", self.cleanup_job, job)
+            with job["lock"]:
+                if job["futures"]:
+                    cleanup_futures.append(job["futures"][-1])
+        if cleanup_futures:
+            print("Waiting for cleanup tasks to complete...")
+            wait(cleanup_futures)
         return
 
     def do_exit(self, arg):
@@ -706,9 +701,9 @@ class ColdpressShell(object):
                     stdout_value = ''
                 return {"return": ret, "stdout": stdout_value} 
             else:
-                return f"Error: Unknown command '{command}'"
+                return {"return": {"success": False, "data": f"Error: Unknown command '{command}'"}, "stdout": ""}
         except Exception as e:
-            return f"Error executing command '{command_line}': {e}"
+            return {"return": {"success": False, "data": f"Error executing command '{command_line}': {e}"}, "stdout": ""}
 
 
 if __name__ == '__main__':
