@@ -13,7 +13,7 @@ import contextlib
 from io import StringIO
 from pathlib import Path
 from datetime import datetime
-import openshift_client as oc
+from kubernetes import client, config
 from concurrent.futures import wait
 from contextlib import redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
@@ -57,13 +57,19 @@ class ColdpressShell(object):
         self.jobs = []
         self.log = []
         self.resources = {"nodes": {}}
-        ret = self.create_job() 
-        nodes = oc.selector('nodes').objects()
+        ret = self.create_job()
+        # Initialize Kubernetes client
+        try:
+            config.load_incluster_config()
+        except:
+            config.load_kube_config()
+        v1 = client.CoreV1Api()
+        nodes = v1.list_node().items
         for node in nodes:
-            labels = node.model.metadata.get('labels', {})
+            labels = node.metadata.labels or {}
             if "coldpress.node" in labels:
                 nodeid = labels["coldpress.node"]
-                allocatable = node.model.status.get('allocatable', {})
+                allocatable = node.status.allocatable or {}
                 gpu_count_str = allocatable.get('nvidia.com/gpu', '0')
                 try:
                     gpu_count = int(gpu_count_str)
@@ -71,12 +77,12 @@ class ColdpressShell(object):
                     gpu_count = 0
                 gpu_availability_map = {}
                 for i in range(gpu_count):
-                    gpu_id = str(i) 
-                    gpu_availability_map[gpu_id] = False 
+                    gpu_id = str(i)
+                    gpu_availability_map[gpu_id] = False
                 self.resources["nodes"][str(nodeid)] = {
-                    "name": node.name(),
+                    "name": node.metadata.name,
                     "gpus": gpu_availability_map
-                }        
+                }
         print("Coldpress Nodes:")
         print(self.resources["nodes"])
 

@@ -112,10 +112,16 @@ Coldpress facilitates a dual-role usage model defined by privilege levels. Admin
 
 
 ### Setup
-Use the `COLDPRESS_ROOT_DIR` environment variable to define the root directory where the application looks for resources such as configuration files and examples. If this variable is not set, Coldpress defaults to the current working directory. 
+Use the `COLDPRESS_ROOT_DIR` environment variable to define the root directory where the application looks for resources such as configuration files and examples. If this variable is not set, Coldpress defaults to the current working directory.
 
 ```bash
 export COLDPRESS_ROOT_DIR=/path/to/coldpress/repo
+```
+
+Optionally, use the `COLDPRESS_NAMESPACE` environment variable to specify the Kubernetes namespace where Coldpress will create pods and persistent volume claims. If not set, it defaults to "default".
+
+```bash
+export COLDPRESS_NAMESPACE=my-namespace
 ```
 
 Install the required python libraries.
