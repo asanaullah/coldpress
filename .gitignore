@@ -1,0 +1,4 @@
+*.log
+coldpress_results/
+__pycache__/
+

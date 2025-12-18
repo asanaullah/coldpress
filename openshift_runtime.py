@@ -2,8 +2,73 @@ import os
 import time
 import shutil
 import tempfile
-import openshift_client as oc
+import subprocess
+from kubernetes import client, config
+from kubernetes.stream import stream
 from urllib.parse import urlparse
+
+# Initialize Kubernetes client
+try:
+    config.load_incluster_config()
+except:
+    config.load_kube_config()
+
+# Create API clients
+v1 = client.CoreV1Api()
+
+# Get namespace from environment variable, default to "default"
+NAMESPACE = os.getenv("COLDPRESS_NAMESPACE", "default")
+
+def copy_from_pod(pod_name, namespace, source_path, dest_path):
+    """Copy files from a pod using Kubernetes stream API instead of kubectl exec"""
+    exec_command = [
+        'tar', 'cf', '-',
+        '-C', source_path,
+        '.',
+        '--exclude', 'lost+found'
+    ]
+
+    print(f"Streaming tar data from pod {pod_name}...")
+    resp = stream(
+        v1.connect_get_namespaced_pod_exec,
+        pod_name,
+        namespace,
+        command=exec_command,
+        stderr=True,
+        stdin=False,
+        stdout=True,
+        tty=False,
+        _preload_content=False
+    )
+
+    # Start tar extraction process
+    tar_process = subprocess.Popen(
+        ['tar', 'xf', '-', '-C', dest_path],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+
+    try:
+        # Stream data from pod to tar process
+        while resp.is_open():
+            resp.update(timeout=1)
+            if resp.peek_stdout():
+                stdout_data = resp.read_stdout()
+                if isinstance(stdout_data, str):
+                    stdout_data = stdout_data.encode('utf-8')
+                tar_process.stdin.write(stdout_data)
+            if resp.peek_stderr():
+                stderr_data = resp.read_stderr()
+                print(f"Pod stderr: {stderr_data}")
+    finally:
+        resp.close()
+        tar_process.stdin.close()
+        tar_process.wait()
+
+    if tar_process.returncode != 0:
+        stderr_output = tar_process.stderr.read().decode()
+        raise Exception(f"tar extraction failed: {stderr_output}")
 
 def _copy_results_(params, pvc_dirs, pod_log):
     run_params = params["run_params"]
@@ -46,23 +111,17 @@ def openshift_run(params):
             storage_size = mount_info.get("size", "1Gi") # Default to 1Gi if not set
             volume_name = f"oneshot-pvc-mount-{i}"
             pvc_name = f"{pod_name}-{volume_name}" 
-            pvc_spec = {
-                "apiVersion": "v1",
-                "kind": "PersistentVolumeClaim",
-                "metadata": {
-                    "name": pvc_name
-                },
-                "spec": {
-                    "accessModes": ["ReadWriteOnce"],
-                    "resources": {
-                        "requests": {
-                            "storage": storage_size 
-                        }
-                    }
-                }
-            }
+            pvc_spec = client.V1PersistentVolumeClaim(
+                metadata=client.V1ObjectMeta(name=pvc_name),
+                spec=client.V1PersistentVolumeClaimSpec(
+                    access_modes=["ReadWriteOnce"],
+                    resources=client.V1ResourceRequirements(
+                        requests={"storage": storage_size}
+                    )
+                )
+            )
             print(f"Creating PVC: {pvc_name} for mount {mount_path}")
-            oc.create(pvc_spec)
+            v1.create_namespaced_persistent_volume_claim(namespace=NAMESPACE, body=pvc_spec)
             created_pvcs.append({"name": pvc_name, "mount_path": mount_path})
             pod_volumes.append({
                 "name": volume_name,
@@ -141,33 +200,36 @@ def openshift_run(params):
                 "failureThreshold": failureThreshold
             }
         print(f"Creating pod: {pod_name}")
-        oc.create(pod_spec)
+        v1.create_namespaced_pod(namespace=NAMESPACE, body=pod_spec)
         print(f"Waiting for pod {pod_name} based on condition: {blocking_type}")
         while True:
-            pod = oc.selector(f'pod/{pod_name}').object()
-            if not pod:
-                print(f"Pod {pod_name} not found. Assuming creation failed or it was deleted.")
-                break 
-            phase = pod.model.status.phase
+            try:
+                pod = v1.read_namespaced_pod(name=pod_name, namespace=NAMESPACE)
+            except client.exceptions.ApiException as e:
+                if e.status == 404:
+                    print(f"Pod {pod_name} not found. Assuming creation failed or it was deleted.")
+                    break
+                raise
+            phase = pod.status.phase
             if blocking_type == "completion":
                 if phase in ["Succeeded", "Failed"]:
                     print(f"Pod completed with phase: {phase}")
-                    pod_log = oc.invoke("logs", pod_name, "-c", "main").out() if run_params.get("log", False) else ''
+                    pod_log = v1.read_namespaced_pod_log(name=pod_name, namespace=NAMESPACE, container="main") if run_params.get("log", False) else ''
                     break
             elif blocking_type == "endpoint":
                 if phase == "Failed":
                     print(f"Pod {pod_name} failed before becoming ready.")
-                    pod_log = oc.invoke("logs", pod_name, "-c", "main").out() if run_params.get("log", False) else ''
+                    pod_log = v1.read_namespaced_pod_log(name=pod_name, namespace=NAMESPACE, container="main") if run_params.get("log", False) else ''
                     break
-                if pod.model.status.conditions:
-                    ready_condition = next((c for c in pod.model.status.conditions if c.type == "Ready"), None)
+                if pod.status.conditions:
+                    ready_condition = next((c for c in pod.status.conditions if c.type == "Ready"), None)
                     if ready_condition and ready_condition.status == "True":
                         print(f"Pod {pod_name} is Ready at endpoint.")
                         break 
             elif blocking_type == "delay":
                 if phase == "Failed" or phase == "Succeeded":
                     print(f"Pod {pod_name} {phase} before delay could complete.")
-                    pod_log = oc.invoke("logs", pod_name, "-c", "main").out() if run_params.get("log", False) else ''
+                    pod_log = v1.read_namespaced_pod_log(name=pod_name, namespace=NAMESPACE, container="main") if run_params.get("log", False) else ''
                     break
                 if phase == "Running":
                     delay_seconds = blocking_params.get("delay", 10)      
@@ -181,7 +243,7 @@ def openshift_run(params):
             print("Starting resource cleanup...")
             try:
                 print(f"Deleting pod: {pod_name}")
-                oc.invoke("delete", f"pod/{pod_name}")
+                v1.delete_namespaced_pod(name=pod_name, namespace=NAMESPACE)
             except Exception as e:
                 print(f"Warning: Failed to delete pod {pod_name}. Error: {e}")
 
@@ -206,7 +268,7 @@ def openshift_run(params):
                 helper_pod_name = f"{pvc_name}-extractor"
                 helper_mount_point = "/data"
                 print(f"Creating helper pod: {helper_pod_name}")
-                oc.create({
+                v1.create_namespaced_pod(namespace=NAMESPACE, body={
                     "apiVersion": "v1", "kind": "Pod", "metadata": {"name": helper_pod_name},
                     "spec": {
                         "nodeName": node_name,
@@ -218,28 +280,29 @@ def openshift_run(params):
                 })
                 print(f"Waiting for {helper_pod_name} to be Running...")
                 while True:
-                    pod = oc.selector(f'pod/{helper_pod_name}').object()
-                    if pod and pod.model.status.phase == "Running":
-                        print("Helper pod is Running.")
-                        break
-                    if not pod or pod.model.status.phase in ["Failed", "Succeeded"]:
-                        raise Exception(f"Helper pod {helper_pod_name} failed to start.")
-                    time.sleep(1) 
-                source_spec = f"{helper_pod_name}:{helper_mount_point}/."
-                copy_cmd = f"oc exec {helper_pod_name} -- tar czf - -C {helper_mount_point} . --exclude lost+found | tar xzf - -C {dest_base_dir}"
-                print(f"Executing: {copy_cmd}")
-                if os.system(copy_cmd) != 0:
-                    print(f"Warning: 'oc cp' command failed for {source_spec}")
+                    try:
+                        pod = v1.read_namespaced_pod(name=helper_pod_name, namespace=NAMESPACE)
+                        if pod.status.phase == "Running":
+                            print("Helper pod is Running.")
+                            break
+                        if pod.status.phase in ["Failed", "Succeeded"]:
+                            raise Exception(f"Helper pod {helper_pod_name} failed to start.")
+                    except client.exceptions.ApiException as e:
+                        if e.status != 404:
+                            raise
+                    time.sleep(1)
+                print(f"Copying data from {helper_pod_name}:{helper_mount_point} to {dest_base_dir}")
+                copy_from_pod(helper_pod_name, NAMESPACE, helper_mount_point, dest_base_dir)
         except Exception as e:
                 print(f"Warning: Failed to copy data {pod_name}. Error: {e}")
         finally:
             print(f"Deleting helper pod: {helper_pod_name}")
-            oc.invoke("delete", f"pod/{helper_pod_name}")
+            v1.delete_namespaced_pod(name=helper_pod_name, namespace=NAMESPACE)
             for pvc_info in created_pvcs:
                 pvc_name = pvc_info["name"]
                 try:
                     print(f"Deleting PVC: {pvc_name}")
-                    oc.invoke("delete", f"pvc/{pvc_name}")
+                    v1.delete_namespaced_persistent_volume_claim(name=pvc_name, namespace=NAMESPACE)
                 except Exception as e:
                     print(f"Warning: Failed to delete PVC {pvc_name}. Error: {e}")
         _copy_results_(params, dest_base_dir_list, pod_log)
@@ -254,9 +317,9 @@ def openshift_cleanup(params, resources):
     pod_name = resources.get("pod_name")
     pod_log = ''
     if pod_name:
-        pod_log = oc.invoke("logs", pod_name, "-c", "main").out() if run_params.get("log", False) else ''
+        pod_log = v1.read_namespaced_pod_log(name=pod_name, namespace=NAMESPACE, container="main") if run_params.get("log", False) else ''
         print(f"Deleting pod: {pod_name}")
-        oc.invoke("delete", f"pod/{pod_name}")
+        v1.delete_namespaced_pod(name=pod_name, namespace=NAMESPACE)
     else:
         pod_name =  tag + "-" + node_name + "-" + run_params.get("label", "unlabeled_pod")
     print("Copying data for pvcs...")
@@ -272,7 +335,7 @@ def openshift_cleanup(params, resources):
             helper_pod_name = f"{pvc_name}-extractor"
             helper_mount_point = "/data"
             print(f"Creating helper pod: {helper_pod_name}")
-            oc.create({
+            v1.create_namespaced_pod(namespace=NAMESPACE, body={
                 "apiVersion": "v1", "kind": "Pod", "metadata": {"name": helper_pod_name},
                 "spec": {
                     "nodeName": node_name,
@@ -284,26 +347,27 @@ def openshift_cleanup(params, resources):
             })
             print(f"Waiting for {helper_pod_name} to be Running...")
             while True:
-                pod = oc.selector(f'pod/{helper_pod_name}').object()
-                if pod and pod.model.status.phase == "Running":
-                    print("Helper pod is Running.")
-                    break
-                if not pod or pod.model.status.phase in ["Failed", "Succeeded"]:
-                    raise Exception(f"Helper pod {helper_pod_name} failed to start.")
-                time.sleep(1) 
-            source_spec = f"{helper_pod_name}:{helper_mount_point}/."
-            copy_cmd = f"oc exec {helper_pod_name} -- tar czf - -C {helper_mount_point} . --exclude lost+found | tar xzf - -C {dest_base_dir}"
-            print(f"Executing: {copy_cmd}")
-            if os.system(copy_cmd) != 0:
-                print(f"Warning: 'oc cp' command failed for {source_spec}")
+                try:
+                    pod = v1.read_namespaced_pod(name=helper_pod_name, namespace=NAMESPACE)
+                    if pod.status.phase == "Running":
+                        print("Helper pod is Running.")
+                        break
+                    if pod.status.phase in ["Failed", "Succeeded"]:
+                        raise Exception(f"Helper pod {helper_pod_name} failed to start.")
+                except client.exceptions.ApiException as e:
+                    if e.status != 404:
+                        raise
+                time.sleep(1)
+            print(f"Copying data from {helper_pod_name}:{helper_mount_point} to {dest_base_dir}")
+            copy_from_pod(helper_pod_name, NAMESPACE, helper_mount_point, dest_base_dir)
             print(f"Deleting helper pod: {helper_pod_name}")
-            oc.invoke("delete", f"pod/{helper_pod_name}")
+            v1.delete_namespaced_pod(name=helper_pod_name, namespace=NAMESPACE)
         except Exception as e:
             print(f"Error: {e}")
         finally:
             try:
                 print(f"Deleting PVC: {pvc_name}")
-                oc.invoke("delete", f"pvc/{pvc_name}")
+                v1.delete_namespaced_persistent_volume_claim(name=pvc_name, namespace=NAMESPACE)
             except Exception as e:
                 print(f"Warning: Failed to delete PVC {pvc_name}. Error: {e}")
     _copy_results_(params, dest_base_dir_list, pod_log)
