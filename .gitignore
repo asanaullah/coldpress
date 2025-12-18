@@ -1,5 +1,4 @@
 *.log
 coldpress_results/
 __pycache__/
-parsers/__pycache__/
 

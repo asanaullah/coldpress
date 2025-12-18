@@ -70,8 +70,6 @@ def copy_from_pod(pod_name, namespace, source_path, dest_path):
         stderr_output = tar_process.stderr.read().decode()
         raise Exception(f"tar extraction failed: {stderr_output}")
 
-    return tar_process.returncode
-
 def _copy_results_(params, pvc_dirs, pod_log):
     run_params = params["run_params"]
     node_name = params["node_name"]
@@ -290,9 +288,7 @@ def openshift_run(params):
                         if pod.status.phase in ["Failed", "Succeeded"]:
                             raise Exception(f"Helper pod {helper_pod_name} failed to start.")
                     except client.exceptions.ApiException as e:
-                        if e.status == 404:
-                            pass  # Pod not yet created, wait
-                        else:
+                        if e.status != 404:
                             raise
                     time.sleep(1)
                 print(f"Copying data from {helper_pod_name}:{helper_mount_point} to {dest_base_dir}")
@@ -359,9 +355,7 @@ def openshift_cleanup(params, resources):
                     if pod.status.phase in ["Failed", "Succeeded"]:
                         raise Exception(f"Helper pod {helper_pod_name} failed to start.")
                 except client.exceptions.ApiException as e:
-                    if e.status == 404:
-                        pass  # Pod not yet created, wait
-                    else:
+                    if e.status != 404:
                         raise
                 time.sleep(1)
             print(f"Copying data from {helper_pod_name}:{helper_mount_point} to {dest_base_dir}")
