@@ -1,5 +1,3 @@
 pyyaml
 kubernetes
-streamlit
-streamlit-autorefresh
 pydantic
