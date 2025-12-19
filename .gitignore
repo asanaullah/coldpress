@@ -1,4 +1,7 @@
 *.log
 coldpress_results/
 __pycache__/
+.venv/
+.ruff_cache/
+.pytest_cache/
 
