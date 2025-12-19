@@ -25,11 +25,5 @@ jobs:
         pip install -r requirements.txt -r test-requirements.txt
         pip install ruff pytest
 
-    - name: Run ruff linter
-      run: ruff check .
-
-    - name: Run ruff formatter
-      run: ruff format --check .
-
-    - name: Run pytest
-      run: pytest tests/
+    - name: Run pre-commit checks  
+      uses: pre-commit/action@v3  
