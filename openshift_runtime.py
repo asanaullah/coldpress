@@ -2,21 +2,52 @@ import os
 import time
 import shutil
 import subprocess
+from pathlib import Path
 from kubernetes import client, config
 from kubernetes.stream import stream
 from urllib.parse import urlparse
 
+
+def get_current_namespace_from_serviceAccount() -> str:
+    namespace_path: Path = Path(
+        "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+    )
+
+    if namespace_path.is_file():
+        with namespace_path.open("r") as f:
+            return f.read().strip()
+
+    # Fallback if the file isn't present (e.g., service account not mounted)
+    return "default"
+
+
+def get_current_namespace_from_kubeconfig() -> str:
+    try:
+        contexts, active_context = config.list_kube_config_contexts()
+    except config.ConfigException:
+        return "default"
+
+    namespace = active_context["context"].get("namespace")
+
+    if not namespace:
+        namespace = "default"
+
+    return namespace
+
+
 # Initialize Kubernetes client
 try:
     config.load_incluster_config()
+    current_namespace = get_current_namespace_from_serviceAccount()
 except Exception:
     config.load_kube_config()
+    current_namespace = get_current_namespace_from_kubeconfig()
 
 # Create API clients
 v1 = client.CoreV1Api()
 
 # Get namespace from environment variable, default to "default"
-NAMESPACE = os.getenv("COLDPRESS_NAMESPACE", "default")
+NAMESPACE = os.getenv("COLDPRESS_NAMESPACE", current_namespace or "default")
 
 
 def copy_from_pod(pod_name, namespace, source_path, dest_path):
@@ -270,6 +301,7 @@ def openshift_run(params):
         return resources
     else:
         dest_base_dir_list = []
+        helper_pods_created = []
         try:
             print("Pod completed, copying data...")
             for pvc_info in created_pvcs:
@@ -311,6 +343,7 @@ def openshift_run(params):
                         },
                     },
                 )
+                helper_pods_created.append(helper_pod_name)
                 print(f"Waiting for {helper_pod_name} to be Running...")
                 while True:
                     try:
@@ -337,8 +370,14 @@ def openshift_run(params):
         except Exception as e:
             print(f"Warning: Failed to copy data {pod_name}. Error: {e}")
         finally:
-            print(f"Deleting helper pod: {helper_pod_name}")
-            v1.delete_namespaced_pod(name=helper_pod_name, namespace=NAMESPACE)
+            for helper_pod_name in helper_pods_created:
+                try:
+                    print(f"Deleting helper pod: {helper_pod_name}")
+                    v1.delete_namespaced_pod(name=helper_pod_name, namespace=NAMESPACE)
+                except Exception as e:
+                    print(
+                        f"Warning: Failed to delete helper pod {helper_pod_name}. Error: {e}"
+                    )
             for pvc_info in created_pvcs:
                 pvc_name = pvc_info["name"]
                 try:
