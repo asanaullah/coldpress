@@ -19,7 +19,7 @@ class vLLMParser:
         endpoint_address = f"http://127.0.0.1:{port}/health"
         env_variables = [{"name": "HOME", "value": "/tmp"}]
         for key, value in parsed_config["env"].items():
-            env_variables.append({"name":key, "value": str(value)})
+            env_variables.append({"name": key, "value": str(value)})
         command_args = "python3 -m vllm.entrypoints.openai.api_server "
         for key, value in parsed_config["args"].items():
             command_args += f" --{key.replace('_', '-')} {value}"
@@ -36,10 +36,6 @@ class vLLMParser:
             "env": env_variables,
             "args": [command_args],
             "command": ["bash", "-c"],
-            "resources": {
-                "limits": {
-                    "nvidia.com/gpu": parsed_config["gpu"]
-                }
-            }
+            "resources": {"limits": {"nvidia.com/gpu": parsed_config["gpu"]}},
         }
         return run_params

@@ -22,8 +22,10 @@ class BenchmarkArgs(StrictBase):
 
     def to_cli_options(self):
         return " ".join(
-            f"--{name.replace('_', '-')}={getattr(self, name)}" for name in self.__class__.model_fields
+            f"--{name.replace('_', '-')}={getattr(self, name)}"
+            for name in self.__class__.model_fields
         )
+
 
 class Benchmark(StrictBase):
     name: str
