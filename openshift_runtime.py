@@ -102,7 +102,7 @@ def openshift_run(params):
     container_volume_mounts = []
     created_pvcs = []
     pod_log = ""
-    os.makedirs(f"{params["tmpdir"]}", exist_ok=True)
+    os.makedirs(f"{params['tmpdir']}", exist_ok=True)
     try:
         for i, mount_info in enumerate(run_params.get("ephemeral_mounts", [])):
             mount_path = mount_info["target"]

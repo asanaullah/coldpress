@@ -475,7 +475,7 @@ class ColdpressShell(object):
                     }
                     task_list.append(
                         {
-                            "label": f"Benchmark {benchmark_id+1}: {name} run on Node: {params['node_id']} ({params['node_name']})",
+                            "label": f"Benchmark {benchmark_id + 1}: {name} run on Node: {params['node_id']} ({params['node_name']})",
                             "params": params,
                         }
                     )
@@ -536,7 +536,7 @@ class ColdpressShell(object):
         list_cmd = args[0].lower()
         try:
             if list_cmd == "examples":
-                search_path = Path(f'{self.meta_data["root_dir"]}/examples')
+                search_path = Path(f"{self.meta_data['root_dir']}/examples")
                 if not search_path.is_dir():
                     return {"success": False, "data": "Error: No examples found"}
                 all_items = list(search_path.iterdir())
