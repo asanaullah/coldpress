@@ -15,8 +15,7 @@ from kubernetes import client, config
 from concurrent.futures import wait
 from contextlib import redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
-from openshift_runtime import openshift_run as orun
-from openshift_runtime import openshift_cleanup as oclean
+from openshift_runtime import runtime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from models import ConfigFile
 from pydantic import ValidationError
@@ -60,35 +59,11 @@ class ColdpressShell(object):
             "benchmark": BenchmarkParser(),
             "discovery": DiscoveryParser(),
         }
+        self.runtime = runtime()
         self.jobs = []
         self.log = []
-        self.resources = {"nodes": {}}
+        self.resources = {"nodes": self.runtime.get_nodes()}
         self.create_job()
-        # Initialize Kubernetes client
-        try:
-            config.load_incluster_config()
-        except Exception:
-            config.load_kube_config()
-        v1 = client.CoreV1Api()
-        nodes = v1.list_node().items
-        for node in nodes:
-            labels = node.metadata.labels or {}
-            if "coldpress.node" in labels:
-                nodeid = labels["coldpress.node"]
-                allocatable = node.status.allocatable or {}
-                gpu_count_str = allocatable.get("nvidia.com/gpu", "0")
-                try:
-                    gpu_count = int(gpu_count_str)
-                except ValueError:
-                    gpu_count = 0
-                gpu_availability_map = {}
-                for i in range(gpu_count):
-                    gpu_id = str(i)
-                    gpu_availability_map[gpu_id] = False
-                self.resources["nodes"][str(nodeid)] = {
-                    "name": node.metadata.name,
-                    "gpus": gpu_availability_map,
-                }
         print("Coldpress Nodes:")
         print(self.resources["nodes"])
 
@@ -134,7 +109,7 @@ class ColdpressShell(object):
                     contextlib.redirect_stdout(stdout_buffer),
                     contextlib.redirect_stderr(stderr_buffer),
                 ):
-                    oclean(params, resources)
+                    self.runtime.cleanup(params, resources)
             except Exception as e:
                 log_job_msg(f"Cleanup for Task {task_id} raised: {e}")
             stdout_val = stdout_buffer.getvalue().strip()
@@ -339,7 +314,7 @@ class ColdpressShell(object):
             task_id = self.enqueue_task(
                 0,
                 f"network discovery for Node: {params['node_id']} ({params['node_name']})",
-                orun,
+                self.runtime.run,
                 params,
             )
             return {"success": True, "data": task_id}
@@ -517,7 +492,7 @@ class ColdpressShell(object):
                     f"{result_dir_base}/{gid}/config.yaml",
                 )
                 for task in task_list:
-                    self.enqueue_task(gid, task["label"], orun, task["params"])
+                    self.enqueue_task(gid, task["label"], self.runtime.run, task["params"])
                 cleanup_label = "Clean up active resources"
                 with job["lock"]:
                     job["task_list"].append({"label": cleanup_label, "params": {}})

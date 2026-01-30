@@ -1,12 +1,13 @@
 benchmarks:
   - name: guidellm
-    launch_node: 1 
-    target_node: 1
+    launch_node: 0 
+    target_node: 0
     log: True
-    port: 8000
+    port: 8040
     args: 
       max-seconds: 30
       rate-type: throughput
+      rate: 1
       data: "\"prompt_tokens=256,output_tokens=128\""
 
 
@@ -20,11 +21,11 @@ model_server:
       env:
         VLLM_USE_V1: 1 
       args:
-        port: 8000
+        port: 8040
         gpu-memory-utilization: 0.6
     hardware:
-      node: 1
-      gpu: 2
+      node: 0
+      gpu: 0
     storage:
       mounts:
         - name: s3_main_bucket

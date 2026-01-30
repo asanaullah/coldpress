@@ -3,10 +3,11 @@ benchmarks:
     launch_node: 0 
     target_node: 0
     log: True
-    port: 8100
+    port: 8010
     args: 
       max-seconds: 30
       rate-type: throughput
+      rate: 1
       data: "\"prompt_tokens=256,output_tokens=128\""
 
 
@@ -20,7 +21,7 @@ model_server:
       env:
         VLLM_USE_V1: 1 
       args:
-        port: 8100
+        port: 8010
         gpu-memory-utilization: 0.6
     hardware:
       node: 0

@@ -18,6 +18,7 @@ class StrictBase(BaseModel):
 class BenchmarkArgs(StrictBase):
     max_seconds: int
     rate_type: str
+    rate: int
     data: str
 
     def to_cli_options(self):
