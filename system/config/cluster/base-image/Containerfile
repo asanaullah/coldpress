@@ -1,0 +1,17 @@
+# Assisted by: Gemini 3
+
+FROM python:3.13-slim
+
+WORKDIR /app
+
+
+# Copy your source code
+COPY ../../../../ .
+
+# install requirements
+RUN pip install --no-cache-dir -r system/config/cluster/base-image/requirements.txt
+
+
+# Set the entrypoint to run the operator
+CMD ["python", "-m", "kopf", "run", "/app/operator.py", "--verbose"]
+

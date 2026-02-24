@@ -1,0 +1,105 @@
+// Assisted by: Gemini 3
+digraph ColdpressStepFlow {
+    rankdir=TB;
+    compound=true;
+    fontname="Helvetica";
+    nodesep=0.8;
+    ranksep=0.9;
+
+    node [fontname="Helvetica", shape=box, style="filled,rounded", fillcolor="#ecf0f1", color="#34495e"];
+    edge [fontname="Helvetica", fontsize=11, fontcolor="#2c3e50", color="#7f8c8d", penwidth=1.5];
+
+    // Actors
+    Admin [shape=oval, fillcolor="#fadbd8", label="Administrator"];
+    User [shape=oval, fillcolor="#d6eaf8", label="Standard User"];
+
+    // ==========================================
+    // 1. ADMIN NAMESPACE
+    // ==========================================
+    subgraph cluster_admin {
+        label="Admin Namespace (coldpress-admin)";
+        style=dashed; color="#e74c3c"; bgcolor="#fdf2e9";
+
+        Templates [label="Workload & Discovery\nTemplates", shape=folder, fillcolor="#f5b041"];
+        AdminCRs [label="Admin Jobs\n(e.g., DiscoveryJ)", shape=note, fillcolor="#f1948a"];
+        AdminPVC [label="Admin Storage\n(Results PVC)", shape=cylinder, fillcolor="#e6b0aa"];
+    }
+
+    // ==========================================
+    // 2. USER NAMESPACE
+    // ==========================================
+    subgraph cluster_user {
+        label="User Namespace (e.g., researcher-a)";
+        style=dashed; color="#2980b9"; bgcolor="#ebf5fb";
+
+        NSAnnotations [label="NS Annotations\n(Allowed Parsers)", shape=note, fillcolor="#85c1e9"];
+        UserCRs [label="User Jobs\n(ComputeJ, CRA)", shape=note, fillcolor="#85c1e9"];
+        UserPVC [label="User Storage\n(Results PVC)", shape=cylinder, fillcolor="#a9cce3"];
+    }
+
+    // ==========================================
+    // 3. COLDPRESS OPERATOR
+    // ==========================================
+    subgraph cluster_operator {
+        label="Coldpress Operator";
+        style=solid; color="#27ae60"; bgcolor="#e9f7ef";
+
+        OpAuth [label="Verify Auth\n& Fetch Template", fillcolor="#abebc6"];
+        OpRender [label="Score Nodes &\nRender Parameters", fillcolor="#abebc6"];
+        OpSubmit [label="Translate to JobSet\n& Submit", fillcolor="#abebc6"];
+        OpMonitor [label="Monitor Status &\nGarbage Collect", fillcolor="#abebc6"];
+        
+        // Internal operator flow lines
+        OpAuth -> OpRender [style=dotted, arrowhead=none];
+        OpRender -> OpSubmit [style=dotted, arrowhead=none];
+        OpSubmit -> OpMonitor [style=dotted, arrowhead=none];
+    }
+
+    // ==========================================
+    // 4. KUBERNETES & KUEUE
+    // ==========================================
+    subgraph cluster_k8s {
+        label="Kubernetes Cluster";
+        style=solid; color="#8e44ad"; bgcolor="#f5eef8";
+
+        Kueue [label="Kueue\n(ClusterQueue / Quota)", shape=component, fillcolor="#d2b4de"];
+        JobSets [label="K8s JobSets\n(Multi-Task execution)", shape=box3d, fillcolor="#bb8fce"];
+        Pods [label="K8s Pods\n(Running on Nodes)", shape=box3d, fillcolor="#bb8fce"];
+    }
+
+    // ==========================================
+    // NUMBERED WORKFLOW STEPS
+    // ==========================================
+    
+    // Setup
+    Admin -> Templates [label="  1. Defines secure\ntemplates", color="#c0392b"];
+    Admin -> NSAnnotations [label="  2. Sets allowed parsers\nfor User NS", color="#c0392b"];
+    
+    // Job Submission
+    User -> UserCRs [label="  3a. Submits User Job", color="#2980b9"];
+    Admin -> AdminCRs [label="  3b. Submits Admin Job\n(System Discovery)", color="#c0392b"];
+    
+    // Operator Processing
+    UserCRs -> OpAuth [label="  4. Watches new CRs"];
+    AdminCRs -> OpAuth [label="  4. Watches new CRs"];
+    
+    OpAuth -> NSAnnotations [label="  5. Checks authorization"];
+    OpAuth -> Templates [label="  6. Fetches template"];
+    
+    OpRender -> Kueue [label="  7. Queries ClusterQueue\nfor Node demand/scoring", color="#d35400", style=dashed, dir=both];
+    
+    OpSubmit -> JobSets [label="  8. Creates suspended JobSet", color="#27ae60"];
+    
+    // Kueue & Execution
+    JobSets -> Kueue [label="  9. Requests quota"];
+    Kueue -> JobSets [label="  10. Admits/Unsuspends"];
+    JobSets -> Pods [label="  11. Schedules Tasks"];
+    
+    // Storage
+    Pods -> UserPVC [label="  12a. Writes User Results", color="#8e44ad"];
+    Pods -> AdminPVC [label="  12b. Writes Admin Results", color="#8e44ad"];
+    
+    // Cleanup
+    Pods -> OpMonitor [label="  13. Completion triggers\nGarbage Collection"];
+    OpMonitor -> JobSets [label="  14. Cleans up K8s resources\nand CRs", color="#c0392b"];
+}

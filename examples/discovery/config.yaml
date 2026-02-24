@@ -1,0 +1,40 @@
+# Assisted by: Gemini 3
+apiVersion: coldpress.io/v1
+kind: DiscoveryJ
+metadata:
+  name: system-perf
+  namespace: coldpress-admin
+spec:
+  template: system-perf-discovery
+---
+apiVersion: coldpress.io/v1
+kind: DiscoveryJ
+metadata:
+  name: pcie-topology
+  namespace: coldpress-admin
+spec:
+  template: pcie-topology-discovery
+---
+apiVersion: coldpress.io/v1
+kind: DiscoveryJ
+metadata:
+  name: network-topology
+  namespace: coldpress-admin
+spec:
+  template: network-topology-discovery
+---
+apiVersion: coldpress.io/v1
+kind: DiscoveryJ
+metadata:
+  name: comprehensive
+  namespace: coldpress-admin
+spec:
+  template: comprehensive-system-discovery
+---
+apiVersion: coldpress.io/v1
+kind: DiscoveryJ
+metadata:
+  name: connectivity
+  namespace: coldpress-admin
+spec:
+  template: rdma-connectivity-discovery

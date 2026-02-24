@@ -1,0 +1,173 @@
+# Assisted by: Gemini 3
+apiVersion: coldpress.io/v1
+kind: DiscoveryTemplate
+metadata:
+  name: rdma-connectivity-discovery
+  namespace: coldpress-admin
+spec:
+  image: "docker.io/library/fedora:latest"
+  result_dir: "rdma-connectivity"
+  script: |
+    echo "Gathering High-Speed Network and GPU topology..."
+    
+    # Install required hardware utilities, ping, and graphviz for drawing
+    dnf install -y pciutils iproute graphviz python3 procps-ng iputils > /dev/null 2>&1
+    
+    # Shared directory on the persistent volume to allow nodes to see each other
+    SHARED_DIR="/mnt/coldpress-data/topo_discovery"
+    mkdir -p $SHARED_DIR
+    
+    cat << 'EOF_PY' > collect_topo.py
+    import os, json, socket, glob, subprocess
+    SHARED_DIR = "/mnt/coldpress-data/topo_discovery"
+    hostname = socket.gethostname()
+    
+    # 1. Discover GPUs and their NUMA nodes
+    gpus = []
+    try:
+        lspci_out = subprocess.check_output("lspci -nn | grep -i 'nvidia\\|amd' | grep -i 'vga\\|3d'", shell=True, text=True)
+        for line in lspci_out.strip().split('\n'):
+            if not line: continue
+            pci_addr = line.split()[0]
+            numa_path = f"/sys/bus/pci/devices/0000:{pci_addr}/numa_node"
+            numa = "-1"
+            if os.path.exists(numa_path):
+                with open(numa_path) as f: numa = f.read().strip()
+            gpus.append({"pci": pci_addr, "numa": numa, "desc": line.split(': ')[-1]})
+    except Exception:
+        pass
+
+    # 2. Discover High-Speed RDMA/RoCE NICs
+    nics = []
+    for iface in os.listdir('/sys/class/net/'):
+        if iface == 'lo' or not os.path.exists(f'/sys/class/net/{iface}/device'): 
+            continue
+        
+        # Check if the device has RDMA/Infiniband capabilities
+        is_rdma = os.path.exists(f'/sys/class/net/{iface}/device/infiniband')
+        if not is_rdma: 
+            continue # Ignore non-RDMA capable NICs
+            
+        # Check link speed, ignore low speed (< 10Gbps)
+        speed = "unknown"
+        speed_path = f'/sys/class/net/{iface}/speed'
+        if os.path.exists(speed_path):
+            try:
+                with open(speed_path) as f: 
+                    val = int(f.read().strip())
+                    if val < 10000: continue
+                    speed = f"{val} Mbps"
+            except:
+                continue
+        
+        pci_addr = os.path.basename(os.readlink(f'/sys/class/net/{iface}/device'))
+        numa_path = f'/sys/class/net/{iface}/device/numa_node'
+        numa = "-1"
+        if os.path.exists(numa_path):
+            with open(numa_path) as f: numa = f.read().strip()
+            
+        # Extract IP address for latency pings
+        ip = ""
+        try:
+            ip_out = subprocess.check_output(f"ip -4 addr show {iface} | grep inet | awk '{{print $2}}' | cut -d/ -f1", shell=True, text=True).strip()
+            if ip_out: ip = ip_out.split('\n')[0]
+        except:
+            pass
+            
+        nics.append({"name": iface, "pci": pci_addr, "numa": numa, "speed": speed, "ip": ip})
+
+    # 3. Ping other known RDMA NICs to measure network latency
+    latency_map = {}
+    for f in glob.glob(f"{SHARED_DIR}/*.json"):
+        try:
+            with open(f) as data_file:
+                other_data = json.load(data_file)
+                other_host = other_data.get("hostname")
+                if other_host == hostname: continue
+                
+                for other_nic in other_data.get("nics", []):
+                    other_ip = other_nic.get("ip")
+                    if other_ip:
+                        ping_out = subprocess.check_output(f"ping -c 2 -W 1 {other_ip} | tail -1 | awk -F '/' '{{print $5}}'", shell=True, text=True).strip()
+                        if ping_out:
+                            latency_map[other_ip] = ping_out + " ms"
+        except Exception as e:
+            pass
+
+    # Save local topology
+    my_data = {
+        "hostname": hostname,
+        "gpus": gpus,
+        "nics": nics,
+        "latency": latency_map
+    }
+    with open(f"{SHARED_DIR}/{hostname}.json", "w") as f:
+        json.dump(my_data, f, indent=2)
+
+    # 4. Consolidate ALL discovered nodes into a single DOT Graph
+    dot = [
+        "digraph NetworkTopology {", 
+        "  rankdir=TB;", 
+        "  node [shape=box, style=filled, fontname=\"Helvetica\"];",
+        "  edge [fontname=\"Helvetica\", fontsize=10];"
+    ]
+    
+    all_data = {}
+    for f in glob.glob(f"{SHARED_DIR}/*.json"):
+        with open(f) as data_file:
+            d = json.load(data_file)
+            all_data[d["hostname"]] = d
+            
+    for host, data in all_data.items():
+        dot.append(f'  subgraph "cluster_{host}" {{')
+        dot.append(f'    label="Node: {host}";')
+        dot.append(f'    style=filled; color="#f0f2f5";')
+        
+        # Group NICs and GPUs by their NUMA affinity
+        numa_groups = {}
+        for gpu in data.get("gpus", []):
+            numa_groups.setdefault(gpu["numa"], {"gpus": [], "nics": []})["gpus"].append(gpu)
+        for nic in data.get("nics", []):
+            numa_groups.setdefault(nic["numa"], {"gpus": [], "nics": []})["nics"].append(nic)
+            
+        for numa, items in numa_groups.items():
+            dot.append(f'    subgraph "cluster_{host}_numa_{numa}" {{')
+            dot.append(f'      label="NUMA Node {numa}";')
+            dot.append(f'      style=dashed; color="#7f8c8d";')
+            for i, gpu in enumerate(items["gpus"]):
+                gpu_id = f'{host}_gpu_{gpu["pci"].replace(":", "_").replace(".", "_")}'
+                dot.append(f'      "{gpu_id}" [label="GPU\\nPCIe: {gpu["pci"]}", fillcolor="#2ecc71"];')
+            for i, nic in enumerate(items["nics"]):
+                nic_id = f'{host}_nic_{nic["name"]}'
+                dot.append(f'      "{nic_id}" [label="RDMA NIC: {nic["name"]}\\nSpeed: {nic["speed"]}\\nIP: {nic["ip"]}", fillcolor="#3498db", fontcolor=white];')
+            dot.append('    }')
+            
+        dot.append('  }')
+        
+    # Draw latency and bandwidth interconnect edges
+    for host, data in all_data.items():
+        for nic in data.get("nics", []):
+            nic_id = f'{host}_nic_{nic["name"]}'
+            for other_ip, lat in data.get("latency", {}).items():
+                for o_host, o_data in all_data.items():
+                    for o_nic in o_data.get("nics", []):
+                        if o_nic.get("ip") == other_ip:
+                            o_nic_id = f'{o_host}_nic_{o_nic["name"]}'
+                            # Only draw one direction to avoid duplicate overlap
+                            if host < o_host:
+                                bw = min(int(nic["speed"].split()[0]), int(o_nic["speed"].split()[0])) if "Mbps" in nic["speed"] and "Mbps" in o_nic["speed"] else "Unknown"
+                                dot.append(f'  "{nic_id}" -> "{o_nic_id}" [dir=both, label="BW: {bw} Mbps\\nLat: {lat}", color="#e74c3c", penwidth=2.0];')
+
+    dot.append("}")
+    
+    with open("/tmp/result/topology.dot", "w") as f:
+        f.write("\n".join(dot))
+        
+    # Render outputs if graphviz is successfully installed
+    os.system("dot -Tsvg /tmp/result/topology.dot -o /tmp/result/topology.svg 2>/dev/null")
+    os.system("dot -Tpng /tmp/result/topology.dot -o /tmp/result/topology.png 2>/dev/null")
+    EOF_PY
+    
+    python3 collect_topo.py
+    
+    echo "Topology consolidation complete. Artifacts generated at /tmp/result/"

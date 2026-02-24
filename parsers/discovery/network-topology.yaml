@@ -1,0 +1,56 @@
+# Assisted by: Gemini 3
+apiVersion: coldpress.io/v1
+kind: DiscoveryTemplate
+metadata:
+  name: network-topology-discovery
+  namespace: coldpress-admin
+spec:
+  image: "docker.io/library/fedora:latest"
+  result_dir: "network-topology"
+  script: |
+    echo "Gathering Network topology and RDMA data..."
+    # Install required networking utilities
+    dnf install -y iproute ethtool rdma-core > /dev/null 2>&1
+    
+    OUT="network_info.txt"
+    
+    echo "=== LOGICAL INTERFACES ===" > $OUT
+    ip -br a >> $OUT
+    
+    echo -e "\n=== PHYSICAL INTERFACE DETAILS ===" >> $OUT
+    for iface in $(ls /sys/class/net/); do
+        # Only look at physical devices (ones that have a device symlink to the PCI bus)
+        if [ -e "/sys/class/net/$iface/device" ]; then
+            echo "Interface: $iface" >> $OUT
+            echo "  MAC: $(cat /sys/class/net/$iface/address 2>/dev/null)" >> $OUT
+            
+            # Check Link Speed
+            if [ -f "/sys/class/net/$iface/speed" ]; then
+                echo "  Speed: $(cat /sys/class/net/$iface/speed 2>/dev/null) Mbps" >> $OUT
+            fi
+            
+            # Check MTU (Crucial for RoCE / Jumbo Frames)
+            if [ -f "/sys/class/net/$iface/mtu" ]; then
+                echo "  MTU: $(cat /sys/class/net/$iface/mtu 2>/dev/null)" >> $OUT
+            fi
+            
+            # Check NUMA Affinity (Crucial for minimizing latency)
+            if [ -f "/sys/class/net/$iface/device/numa_node" ]; then
+                echo "  NUMA Node: $(cat /sys/class/net/$iface/device/numa_node 2>/dev/null)" >> $OUT
+            fi
+            
+            # Extract the underlying PCIe Address
+            PCI_ADDR=$(basename $(readlink /sys/class/net/$iface/device 2>/dev/null))
+            echo "  PCI Address: $PCI_ADDR" >> $OUT
+            echo "" >> $OUT
+        fi
+    done
+    
+    echo "=== RDMA DEVICES & LINKS ===" >> $OUT
+    if command -v rdma &> /dev/null; then
+        rdma link show >> $OUT 2>&1 || echo "No RDMA links found or driver not loaded." >> $OUT
+    else
+        echo "RDMA tool not installed or supported." >> $OUT
+    fi
+    
+    echo "Discovery complete. File generated at /tmp/result/$OUT"

@@ -1,0 +1,58 @@
+# Assisted by: Gemini 3
+apiVersion: coldpress.io/v1
+kind: DiscoveryTemplate
+metadata:
+  name: system-perf-discovery
+  namespace: coldpress-admin
+spec:
+  image: "docker.io/library/fedora:latest"
+  result_dir: "system-perf"
+  script: |
+    echo "Gathering privileged system performance data..."
+    OUT="perf_states.txt"
+    
+    echo "=== CPU FREQUENCY GOVERNOR ===" > $OUT
+    cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null | sort | uniq -c >> $OUT || echo "Not available" >> $OUT
+    
+    echo -e "\n=== BOOST / TURBO STATUS ===" >> $OUT
+    FOUND_BOOST=0
+    
+    # Check Intel
+    if [ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
+        echo "Intel no_turbo (1=disabled, 0=enabled): $(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null)" >> $OUT
+        FOUND_BOOST=1
+    fi
+    
+    # Check AMD (Newer kernels using amd-pstate)
+    if [ -f /sys/devices/system/cpu/amd_pstate/cpb_boost ]; then
+        echo "AMD CPB Boost (1=enabled, 0=disabled): $(cat /sys/devices/system/cpu/amd_pstate/cpb_boost 2>/dev/null)" >> $OUT
+        FOUND_BOOST=1
+    fi
+    
+    # Check Generic ACPI / legacy drivers
+    if [ -f /sys/devices/system/cpu/cpufreq/boost ]; then
+        echo "Generic Hardware Boost (1=enabled, 0=disabled): $(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null)" >> $OUT
+        FOUND_BOOST=1
+    fi
+    
+    if [ $FOUND_BOOST -eq 0 ]; then
+        echo "Hardware boost/turbo status not exposed or unsupported by current driver." >> $OUT
+    fi
+    
+    echo -e "\n=== C-STATES (SLEEP STATES) INFO (CPU 0) ===" >> $OUT
+    for state in /sys/devices/system/cpu/cpu0/cpuidle/state*; do
+        if [ -d "$state" ]; then
+            name=$(cat $state/name 2>/dev/null)
+            desc=$(cat $state/desc 2>/dev/null)
+            disabled=$(cat $state/disable 2>/dev/null)
+            echo "State: $name | Disabled (0=No, 1=Yes): $disabled | Desc: $desc" >> $OUT
+        fi
+    done
+    
+    echo -e "\n=== PCIE ASPM (Active State Power Management) ===" >> $OUT
+    cat /sys/module/pcie_aspm/parameters/policy 2>/dev/null >> $OUT || echo "ASPM policy not found" >> $OUT
+
+    echo -e "\n=== TRANSPARENT HUGEPAGES ===" >> $OUT
+    cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null >> $OUT || echo "THP not found" >> $OUT
+
+    echo "Discovery complete. File generated at /tmp/result/$OUT"

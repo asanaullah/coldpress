@@ -1,0 +1,67 @@
+# Assisted by: Gemini 3
+apiVersion: coldpress.io/v1
+kind: WorkloadTemplate
+metadata:
+  name: perftest-client
+  namespace: coldpress-admin
+spec:
+  image: "quay.io/asanaullah/coldpress-perftest-image:latest"
+  annotations:
+    k8s.v1.cni.cncf.io/networks: "{network_name}"
+    
+  command: ["bash", "-c"]
+  args:
+    - |
+      # Raise the soft memlock limit to match the device plugin's hard limit
+      ulimit -S -l $(ulimit -H -l) 2>/dev/null || true
+      mkdir -p /tmp/result
+      
+      echo "Waiting for Server IPs to be published on the shared PVC..."
+      while [ ! -f /mnt/coldpress-data/{job_id}_server_ip.txt ]; do 
+        sleep 2
+      done
+      
+      IP_DATA=$(cat /mnt/coldpress-data/{job_id}_server_ip.txt)
+      ETH0_IP=$(echo $IP_DATA | awk '{{print $1}}' | tr -d '[:space:]')
+      SERVER_ROCE_IP=$(echo $IP_DATA | awk '{{print $2}}' | tr -d '[:space:]')
+      
+      RDMA_IFACE=$(ip -o link show | grep -v -E 'lo|eth0' | head -n 1 | awk -F': ' '{{print $2}}' | cut -d@ -f1 | tr -d '[:space:]')
+      RDMA_DEV=$(ls /sys/class/net/$RDMA_IFACE/device/infiniband/ 2>/dev/null | head -n 1)
+      CLIENT_ROCE_IP=$(ip -4 addr show $RDMA_IFACE | grep -w inet | awk '{{print $2}}' | cut -d/ -f1)
+      
+      echo "Server Control IP: $ETH0_IP"
+      echo "Server RoCE IP: $SERVER_ROCE_IP"
+      echo "Client RoCE IP: $CLIENT_ROCE_IP"
+      
+      # Publish Client IP to PVC so the Server can reverse-ARP it
+      echo $CLIENT_ROCE_IP > /mnt/coldpress-data/{job_id}_client_ip.txt
+      
+      echo "Using SR-IOV interface $RDMA_IFACE mapped to RDMA device $RDMA_DEV"
+      
+      # FORCE ARP RESOLUTION
+      echo "Triggering ARP resolution to Server $SERVER_ROCE_IP..."
+      bash -c "echo 'arp' > /dev/udp/$SERVER_ROCE_IP/12345" 2>/dev/null || true
+      
+      # Give the network and the background server process 3 seconds to complete both ARP handshakes
+      sleep 3 
+      
+      echo "Connecting to RoCE Server control channel at $ETH0_IP..."
+      
+      BIN_PATH=$(find /usr -name ib_write_bw 2>/dev/null | head -n 1)
+      
+      # Connect TCP control via ETH0_IP, but run RoCE data over RDMA_DEV
+      $BIN_PATH -d $RDMA_DEV -x {gid_index} -p {port} $ETH0_IP --report_gbits {flags} > /tmp/result/bandwidth_report.txt
+      
+      echo "Benchmark complete."
+  blocking:
+    type: "completion"
+  resources:
+    limits:
+      "{sriov_resource_name}": "1"
+      memory: "16Gi"
+  ephemeral_mounts:
+    - target: "/tmp/result"
+      size: "100Mi"
+  sys_mounts: []
+  files_to_copy: 
+    - "bandwidth_report.txt"

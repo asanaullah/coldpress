@@ -1,0 +1,35 @@
+# Assisted by: Gemini 3
+apiVersion: coldpress.io/v1
+kind: DiscoveryTemplate
+metadata:
+  name: pcie-topology-discovery
+  namespace: coldpress-admin
+spec:
+  image: "docker.io/library/fedora:latest"
+  result_dir: "pcie-topology"
+  script: |
+    echo "Gathering PCIe topology data..."
+    
+    # Install required hardware utilities
+    dnf install -y pciutils hwloc > /dev/null 2>&1
+    
+    OUT="pcie_info.txt"
+    
+    echo "=== PCIe TREE TOPOLOGY ===" > $OUT
+    lspci -tv >> $OUT 2>/dev/null || echo "Failed to get PCIe tree" >> $OUT
+    
+    echo -e "\n=== PCIe LINK SPEEDS & CAPABILITIES ===" >> $OUT
+    # Grep for LnkCap (Maximum Capabilities) and LnkSta (Current Operating Status)
+    lspci -vv 2>/dev/null | grep -E "Subsystem:|LnkCap:|LnkSta:|Kernel driver in use:" >> $OUT || echo "Failed to get verbose PCIe info" >> $OUT
+    
+    echo -e "\n=== PCIe NUMA NODE AFFINITY ===" >> $OUT
+    # Expose the NUMA node for every PCIe device on the bus to help with CPU/GPU pinning
+    for dev in /sys/bus/pci/devices/*; do
+        if [ -f "$dev/numa_node" ]; then
+            NODE=$(cat "$dev/numa_node" 2>/dev/null)
+            # -1 usually indicates the system doesn't have multiple NUMA nodes or the BIOS isn't reporting it properly
+            echo "Device $(basename $dev): NUMA node $NODE" >> $OUT
+        fi
+    done
+    
+    echo "Discovery complete. File generated at /tmp/result/$OUT"

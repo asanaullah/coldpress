@@ -1,0 +1,101 @@
+# Assisted by: Gemini 3
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: researcher-a
+  labels:
+    kueue.openshift.io/managed: "true"
+  annotations:
+    coldpress.io/allowed-allocator-parsers: "vllm-parser, guidellm-parser, pytorch-ddp-parser, gromacs-parser"
+    coldpress.io/allowed-compute-parsers: "perftest-server, perftest-client"
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  namespace: researcher-a
+  name: local-queue-researcher-a
+spec:
+  clusterQueue: cluster-queue-test
+---
+# 1. THE "PHYSICAL" DISK (PVC)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: researcher-a-storage
+  namespace: researcher-a
+spec:
+  storageClassName: nfs-csi
+  accessModes: [ "ReadWriteMany" ]
+  resources: { requests: { storage: 20Gi } }
+---
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: sriov-rdma-net-eno5
+  namespace: researcher-a
+  annotations:
+    k8s.v1.cni.cncf.io/resourceName: openshift.io/eno5np0rdma
+spec:
+  config: '{
+    "cniVersion": "0.3.1",
+    "name": "sriov-rdma-net-eno5",
+    "type": "sriov",
+    "ipam": {
+      "type": "whereabouts",
+      "range": "192.168.1.0/24"
+    }
+  }'
+---
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: sriov-rdma-net-eno6
+  namespace: researcher-a
+  annotations:
+    k8s.v1.cni.cncf.io/resourceName: openshift.io/eno6np0rdma
+spec:
+  config: '{
+    "cniVersion": "0.3.1",
+    "name": "sriov-rdma-net-eno6",
+    "type": "sriov",
+    "ipam": {
+      "type": "whereabouts",
+      "range": "192.168.1.0/24"
+    }
+  }'
+---
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: sriov-rdma-net-eno7
+  namespace: researcher-a
+  annotations:
+    k8s.v1.cni.cncf.io/resourceName: openshift.io/eno7np0rdma
+spec:
+  config: '{
+    "cniVersion": "0.3.1",
+    "name": "sriov-rdma-net-eno7",
+    "type": "sriov",
+    "ipam": {
+      "type": "whereabouts",
+      "range": "192.168.1.0/24"
+    }
+  }'
+---
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: sriov-rdma-net-eno8
+  namespace: researcher-a
+  annotations:
+    k8s.v1.cni.cncf.io/resourceName: openshift.io/eno8np0rdma
+spec:
+  config: '{
+    "cniVersion": "0.3.1",
+    "name": "sriov-rdma-net-eno8",
+    "type": "sriov",
+    "ipam": {
+      "type": "whereabouts",
+      "range": "192.168.1.0/24"
+    }
+  }'

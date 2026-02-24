@@ -1,0 +1,5 @@
+# Assisted by: Gemini 3
+FROM ubuntu:22.04
+RUN apt-get update && apt-get install -y perftest iproute2 iputils-ping && rm -rf /var/lib/apt/lists/*
+RUN chmod -R 777 /tmp
+USER 1001
