@@ -1,0 +1,289 @@
+# Assisted by: Gemini 3
+apiVersion: coldpress.io/v1
+kind: DiscoveryTemplate
+metadata:
+  name: comprehensive-system-discovery
+spec:
+  image: "docker.io/library/fedora:latest"
+  result_dir: "comprehensive-report"
+  script: |
+    echo "Gathering Comprehensive System Metrics..."
+    
+    # 1. Install necessary tools
+    dnf install -y python3 iproute ethtool numactl hwloc pciutils util-linux audit procps-ng kmod > /dev/null 2>&1
+    
+    # 2. Write the CSV data directly to a file to avoid Python string escaping issues
+    cat << 'EOF_CSV' > metrics.csv
+    #,Command,Metric Evaluated (Why it matters),Tuning Responsibility
+    1,sysctl net.core.rmem_max,Absolute max OS receive buffer size. Dictates the highest SO_RCVBUF an app can request.,Admin sets ceiling; App requests via socket.
+    2,sysctl net.core.wmem_max,Absolute max OS send buffer size. Dictates the highest SO_SNDBUF an app can request.,Admin sets ceiling; App requests via socket.
+    3,sysctl net.ipv4.tcp_rmem,"Min, default, and max TCP receive buffer sizes. Crucial for TCP window auto-tuning.",Admin (System-wide tuned profile).
+    4,sysctl net.ipv4.tcp_wmem,"Min, default, and max TCP send buffer sizes.",Admin (System-wide tuned profile).
+    5,sysctl net.core.rmem_default,Default receive buffer for non-TCP sockets (like UDP).,Admin / App (UDP apps must be aware).
+    6,sysctl net.core.wmem_default,Default send buffer for non-TCP sockets.,Admin / App (UDP apps must be aware).
+    7,sysctl net.core.optmem_max,Max ancillary data buffer size per socket (important for zero-copy/eBPF workloads).,Admin (System-wide).
+    8,sysctl net.core.netdev_max_backlog,Max packets queued on the input side before the kernel drops them.,Admin (Prevents bursts from dropping).
+    9,sysctl net.ipv4.tcp_max_syn_backlog,Max queued half-open connections. Limits connection rate spikes.,Admin / App (App tunes via listen() backlog).
+    10,sysctl net.core.somaxconn,"Max queued full connections. If hit, the OS drops new TCP handshakes.",Admin sets ceiling; App sets listen() backlog.
+    11,sysctl net.ipv4.tcp_congestion_control,"TCP congestion algorithm (e.g., cubic vs bbr). bbr is often better for high throughput.",Admin (System-wide).
+    12,sysctl net.ipv4.tcp_adv_win_scale,How much socket buffer is for the TCP window vs. the application buffer overhead.,Admin (Usually left at default).
+    13,sysctl net.ipv4.tcp_window_scaling,Ensures TCP can scale windows beyond 64KB. Essential for modern networks.,Admin (Should always be 1).
+    14,sysctl net.ipv4.tcp_low_latency,Bypasses queueing for low-latency delivery.,Admin (Used only in extreme real-time setups).
+    15,sysctl net.ipv4.tcp_tw_reuse,Allows reusing TIME_WAIT sockets. Crucial for high-connection-churn microservices.,Admin (System-wide).
+    16,sysctl net.ipv4.tcp_fin_timeout,Time to hold sockets in FIN-WAIT-2. Lowering this frees up memory faster.,Admin (System-wide).
+    17,sysctl net.ipv4.tcp_mtu_probing,Helps deal with ICMP black holes in the data center by dynamically discovering MTU.,Admin (System-wide).
+    18,sysctl net.ipv4.tcp_fastopen,Allows data to be sent in the SYN packet. Reduces latency for recurring connections.,Admin enables; App implements in code.
+    19,sysctl net.ipv4.ip_local_port_range,Ephemeral port range. Determines max outbound concurrent connections.,Admin (Expand for proxies/load balancers).
+    20,sysctl net.core.default_qdisc,"Default queueing discipline (e.g., fq is required for TCP BBR).",Admin (System-wide).
+    21,ip link show,"Checks MTU sizes (e.g., 9000 for Jumbo Frames). Apps must know MTU for fragmentation limits.",Admin sets; App optimizes packet sizes.
+    22,ethtool -g eth0,Shows ring buffer sizes at the physical NIC hardware level.,Admin (Hardware level tuning).
+    23,ethtool -k eth0,"Hardware offload features (TSO, GSO, GRO). High-perf apps bypass these if using DPDK.",Admin / App (DPDK/SR-IOV apps bypass OS).
+    24,ethtool -l eth0,Multi-queue channels. Distributes NIC interrupts across CPU cores.,Admin (Align queues to CPU cores).
+    25,ethtool -c eth0,Interrupt coalescing. Balances CPU interrupt overhead vs. network latency.,Admin (Tuned profiles).
+    26,lscpu,"Maps physical cores, threads, NUMA nodes, and L1/L2/L3 caches. Baseline for pinning.",App (Reads topology to pin threads).
+    27,numactl --hardware,Evaluates NUMA distances. Crossing NUMA nodes incurs memory latency penalties.,App (Aligns memory allocations to thread NUMA).
+    28,cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor,CPU power state. powersave saves energy; performance locks max clock speed.,Admin (System-wide via Tuned).
+    29,cat /proc/cmdline,Boot params. Checks for isolcpus or nohz_full which dedicate cores to apps.,Admin (Configured via OpenShift MachineConfig).
+    30,sysctl kernel.sched_min_granularity_ns,Minimum time a task runs before being preempted.,Admin (Tuned for throughput vs latency).
+    31,sysctl kernel.sched_wakeup_granularity_ns,How easily a waking task preempts the currently running task.,Admin (System-wide).
+    32,sysctl kernel.numa_balancing,Auto-moves memory pages to the NUMA node of the CPU accessing them.,Admin (Often disabled for predictable high-perf).
+    33,chrt -m,Max real-time priorities available. Necessary for SCHED_FIFO latency-sensitive apps.,Admin allows; App requests via SecurityContext.
+    34,cat /sys/kernel/debug/sched/features,Internal scheduler features.,Admin (Deep OS tuning).
+    35,cat /proc/sys/kernel/timer_migration,"If enabled, timers migrate to idle CPUs. Disabling reduces cross-CPU jitter.",Admin (Real-time tuning).
+    36,cat /proc/interrupts,IRQ distribution. Shows if a single CPU is being crushed by hardware interrupts.,Admin (Fix via irqbalance).
+    37,cat /proc/irq/default_smp_affinity,Default CPU mask for hardware interrupts.,Admin (System-wide).
+    38,taskset -pc $$,Shows CPU affinity of the current shell. Evaluates if the pod has isolated cores.,Admin configures OpenShift CPU Manager; App verifies.
+    39,cat /sys/fs/cgroup/cpuset/cpuset.cpus,Cgroup CPU allocation. The actual cores the pod is allowed to see and use.,Admin (Kubernetes QoS classes).
+    40,cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us,"Hard CPU throttling limit. If this is low, the app will be throttled regardless of idle cores.",Admin (Kubernetes Limits).
+    41,cat /sys/devices/system/cpu/vulnerabilities/*,"Status of Spectre/Meltdown mitigations, which introduce measurable CPU overhead.",Admin (Can be disabled if security allows).
+    42,cat /sys/kernel/debug/x86/pti_enabled,Page Table Isolation status. Major impact on syscall overhead.,Admin (Kernel boot param).
+    43,"turbostat --Summary --show Busy%,Bzy_MHz,IRQ,PkgWatt",Verifies actual hardware frequency and C-states. Detects thermal throttling.,Admin (Hardware health).
+    44,sysctl kernel.sched_rt_runtime_us,Percentage of CPU time given to real-time tasks. Prevents RT tasks from locking the OS.,Admin (System-wide).
+    45,cat /sys/devices/system/clocksource/clocksource0/current_clocksource,Timekeeping source. tsc is fast; hpet or acpi_pm are very slow and bottleneck DBs.,Admin (Hardware / Virtualization config).
+    46,cat /proc/softirqs,Software interrupts (like networking). High counts on one CPU indicate a bottleneck.,Admin (System-wide).
+    47,sysctl kernel.randomize_va_space,ASLR status.,Admin (Security baseline).
+    48,sysctl kernel.threads-max,Maximum number of concurrent threads system-wide.,Admin (Prevents fork-bombs).
+    49,sysctl kernel.pid_max,Maximum PIDs. High-churn container environments can exhaust this easily.,Admin (System-wide).
+    50,"dmesg -t | grep -i ""machine check""",Checks for underlying hardware errors (MCEs) that silently degrade performance.,Admin (Hardware baseline).
+    51,sysctl vm.swappiness,Aggressiveness of swapping. Usually set to 0 or 1 in Kubernetes to prevent disk swap.,Admin (System-wide).
+    52,sysctl vm.dirty_ratio,Max % of memory for dirty disk pages before forcing synchronous writes.,Admin (Storage tuning).
+    53,sysctl vm.dirty_background_ratio,% of memory for dirty pages before background writeback starts.,Admin (Storage tuning).
+    54,sysctl vm.vfs_cache_pressure,How quickly the OS reclaims inode/dentry caches vs. page caches.,Admin (System-wide).
+    55,cat /sys/kernel/mm/transparent_hugepage/enabled,THP status. Often disabled for databases (Redis/Postgres) due to latency spikes.,Admin (System-wide).
+    56,cat /sys/kernel/mm/transparent_hugepage/defrag,How the OS defragments THP. Can cause severe application pauses.,Admin (System-wide).
+    57,cat /proc/meminfo,"Overall memory baseline. Look specifically at MemFree, Buffers, and Cached.",App (To understand available RAM).
+    58,sysctl vm.nr_hugepages,Explicitly allocated static HugePages (2MB or 1GB). Required for DPDK/databases.,Admin allocates; App consumes via mount.
+    59,sysctl vm.max_map_count,Max memory map areas. Elasticsearch and databases will crash if this is too low.,Admin sets ceiling; App uses mmap().
+    60,sysctl vm.overcommit_memory,Controls if the OS allows apps to allocate more RAM than physically available.,Admin (System-wide).
+    61,sysctl vm.overcommit_ratio,Percentage of overcommit allowed.,Admin (System-wide).
+    62,sysctl kernel.shmmax,Max size of a single shared memory segment. IPC metric for DBs.,Admin (System-wide).
+    63,sysctl kernel.shmall,Total amount of shared memory pages available system-wide.,Admin (System-wide).
+    64,numastat -m,Checks if one NUMA node is out of memory while another is empty (imbalance).,App (NUMA-aware memory allocation).
+    65,cat /proc/buddyinfo,"Memory fragmentation. If heavily fragmented, apps cannot get contiguous memory.",Admin (System health).
+    66,cat /proc/slabinfo,Kernel cache usage. High usage might indicate a kernel leak or heavy network load.,Admin (System health).
+    67,cat /sys/kernel/mm/ksm/run,"Kernel Samepage Merging. Merges identical memory pages to save RAM, but burns CPU.",Admin (Often disabled for high perf).
+    68,sysctl vm.zone_reclaim_mode,How aggressive memory is reclaimed from local NUMA nodes.,Admin (System-wide).
+    69,cat /sys/module/zswap/parameters/enabled,Checks if compressed swap is enabled (trades CPU for memory capacity).,Admin (System-wide).
+    70,sysctl vm.stat_interval,Polling interval for VM statistics.,Admin (System-wide).
+    71,cat /sys/block/sda/queue/scheduler,"I/O Scheduler (e.g., none/mq-deadline for NVMe/SSD, bfq for HDD).",Admin (System-wide per disk).
+    72,cat /sys/block/sda/queue/nr_requests,Max queued I/O requests. Determines parallelism before I/O blocks the app.,Admin (Storage tuning).
+    73,cat /sys/block/sda/queue/read_ahead_kb,Read-ahead buffer. Increase for sequential reads (streaming); decrease for random DB I/O.,Admin (Storage tuning).
+    74,cat /sys/block/sda/queue/rotational,Confirms if OS detects the disk as SSD (0) or HDD (1). Changes kernel behavior.,Admin (Hardware validation).
+    75,cat /sys/block/sda/queue/rq_affinity,I/O completion affinity. Ensures I/O interrupts return to the CPU that initiated them.,Admin (System-wide).
+    76,cat /sys/block/sda/device/queue_depth,Hardware-level Native Command Queuing (NCQ) depth.,Admin (Hardware limit).
+    77,sysctl fs.file-max,Max file descriptors system-wide. Apps handling many connections need this high.,Admin sets ceiling; App requests via ulimit.
+    78,sysctl fs.aio-max-nr,Max concurrent asynchronous I/O operations. Crucial for Nginx/Databases using AIO.,Admin sets ceiling; App configures internally.
+    79,sysctl fs.inotify.max_user_watches,"Max file watchers. High for CI/CD, live-reload, or log tailing apps.",Admin (System-wide).
+    80,sysctl fs.inotify.max_user_instances,Max inotify instances per user.,Admin (System-wide).
+    81,mount | grep sda,Mount options. Look for noatime to prevent metadata writes on every file read.,Admin (Storage provisioning).
+    82,df -hT,"Filesystem types (ext4, xfs). XFS is usually preferred for high-concurrency databases.",Admin (Storage provisioning).
+    83,"lsblk -d -o NAME,ROTA,SCHED,RQ-SIZE,MIN-IO,OPT-IO",Topology of block devices. Helps apps align write blocks to underlying hardware blocks.,App (Aligns DB page sizes to OPT-IO).
+    84,cat /proc/partitions,Evaluates partition layout and sizes.,Admin (System validation).
+    85,cat /proc/diskstats,Baseline I/O counts before user traffic hits.,Admin (Monitoring baseline).
+    86,ulimit -a,"Hard and soft limits for the pod (open files, max user processes, stack size).",Admin configs; App enforces.
+    87,sysctl kernel.seccomp.actions_avail,Available seccomp actions. Determines if security profiles will block app syscalls.,Admin (Security baseline).
+    88,cat /sys/kernel/security/apparmor/profiles,Loaded AppArmor/SELinux profiles. Security enforcement adds latency overhead.,Admin (Security baseline).
+    89,sysctl kernel.perf_event_paranoid,"Access level for perf. If > 1, developers cannot profile CPU paths inside the pod.",Admin (Security vs Observability).
+    90,sysctl kernel.kptr_restrict,Restricts reading kernel pointers. Blocks flame graphs from resolving kernel symbols.,Admin (Security vs Observability).
+    91,sysctl kernel.bpf_stats_enabled,Tells if eBPF program execution stats are tracked (adds slight overhead).,Admin (Observability tuning).
+    92,sysctl kernel.msgmax,Max size of a single POSIX message queue message.,Admin sets ceiling; App uses IPC.
+    93,sysctl kernel.msgmnb,Max size of a POSIX message queue.,Admin sets ceiling; App uses IPC.
+    94,cat /proc/sys/fs/epoll/max_user_instances,Max epoll file descriptors. Dictates async connection scale (Node.js/Go/Nginx).,Admin (System-wide).
+    95,sysctl kernel.dmesg_restrict,Determines if unprivileged users can read the kernel log.,Admin (Security baseline).
+    96,cat /sys/kernel/mm/numa/demotion_enabled,"If memory tiering (e.g., Intel Optane/CXL) is actively shifting cold memory.",Admin (Hardware tiering).
+    97,cat /proc/sys/vm/mmap_min_addr,Lowest virtual address an app can mmap. Important for some legacy emulation.,Admin (Security baseline).
+    98,bpftool feature probe,(If installed) Probes the exact eBPF hooks available in this kernel version.,App (To deploy eBPF agents).
+    99,cat /sys/fs/cgroup/memory/memory.limit_in_bytes,The exact Cgroup memory limit enforced on the pod. Out-of-Memory (OOM) killer trigger.,Admin (Kubernetes limits).
+    100,cat /sys/fs/cgroup/pids/pids.max,The exact Cgroup PID limit. Apps spawning too many processes/threads will crash here.,Admin (Kubernetes limits).
+    101,cat /sys/devices/system/cpu/vulnerabilities/spectre_v1,Spectre V1 mitigation status. Adds overhead to branch predictions.,Admin (Kernel boot parameters).
+    102,cat /sys/devices/system/cpu/vulnerabilities/spectre_v2,"Spectre V2 mitigation (e.g., Retpolines, IBRS). High impact on syscall and context switch speeds.",Admin (Kernel boot parameters).
+    103,cat /sys/devices/system/cpu/vulnerabilities/l1tf,L1 Terminal Fault. Mitigations can force CPU cache flushes on VM/context switches.,Admin (Hardware/Kernel).
+    104,cat /sys/devices/system/cpu/vulnerabilities/mds,Microarchitectural Data Sampling. Flushing buffers adds latency to I/O operations.,Admin (Hardware/Kernel).
+    105,cat /sys/devices/system/cpu/vulnerabilities/retbleed,Retbleed mitigation. Adds significant overhead to return instructions on certain AMD/Intel chips.,Admin (Kernel boot parameters).
+    106,cat /sys/devices/system/cpu/vulnerabilities/gather_data_sampling,GDS / Downfall. Impacts AVX instruction performance (heavy math/vector processing).,Admin (Microcode updates).
+    107,cat /sys/devices/system/cpu/vulnerabilities/spec_store_bypass,SSBD mitigation. Slows down memory stores to prevent stale data reading.,Admin / App (Apps can opt-in via prctl).
+    108,cat /sys/devices/system/cpu/vulnerabilities/mmio_stale_data,MMIO stale data mitigation. Impacts high-throughput PCIe device communication (like fast NICs).,Admin (Hardware/Kernel).
+    109,cat /sys/devices/system/cpu/smt/control,"SMT (Hyperthreading) status. Often disabled for absolute security, which literally halves logical compute capacity.",Admin (BIOS/Kernel).
+    110,"dmesg | grep -i ""mitigations=""",Checks if the kernel was booted with mitigations=off (disables all the above for pure performance at the cost of security).,Admin (OpenShift MachineConfig).
+    111,sestatus,"Overall SELinux status. If enabled, it adds extended attribute (xattr) lookups to file operations.",Admin (System-wide).
+    112,cat /sys/fs/selinux/enforce,"If 1 (Enforcing), blocks are active. If 0 (Permissive), it still logs violations, which burns disk I/O and CPU.",Admin (System-wide).
+    113,cat /sys/module/apparmor/parameters/enabled,AppArmor status (Ubuntu/Debian-based nodes). Applies path-based security checks.,Admin (System-wide).
+    114,aa-status,Number of loaded AppArmor profiles. More profiles = longer evaluation times for syscalls.,Admin (System-wide).
+    115,sysctl kernel.unprivileged_userns_clone,"If enabled, allows unprivileged containers. Can impact the performance of nested virtualization/sandboxes.",Admin (Security vs. Sandboxing).
+    116,cat /proc/sys/fs/protected_symlinks,Adds security checks during path resolution to prevent symlink attacks. Slight VFS overhead.,Admin (System-wide).
+    117,cat /proc/sys/fs/protected_hardlinks,"Similar to above, adds checks to hardlink resolution in the Virtual File System (VFS).",Admin (System-wide).
+    118,capsh --print,"Evaluates Linux Capabilities. Dropping capabilities restricts what the app can do, but rarely impacts raw speed.",App (SecurityContext in Pod spec).
+    119,sysctl fs.suid_dumpable,"Core dump security. If restricted, high-perf apps cannot generate core dumps when they crash, hurting profiling.",Admin sets; App consumes.
+    120,cat /sys/kernel/security/yama/ptrace_scope,"Restricts ptrace. If > 0, developers cannot use strace or gdb easily to profile running bottlenecks.",Admin (Observability vs. Security).
+    121,auditctl -s,"Audit daemon status. If enabled, the kernel intercepts and logs syscalls, which is a massive performance hit.",Admin (Compliance baseline).
+    122,auditctl -l,Lists active audit rules. A high number of rules means the kernel spends more time evaluating each syscall.,Admin (Compliance baseline).
+    123,cat /sys/kernel/security/integrity/ima/active_policy,"IMA (Integrity Measurement Architecture). If active, the kernel hashes files on read/exec. Huge I/O/CPU overhead.",Admin (System-wide).
+    124,cat /sys/kernel/security/integrity/evm/evm_mode,EVM (Extended Verification Module). Verifies cryptographic signatures of file metadata.,Admin (System-wide).
+    125,sysctl kernel.task_delayacct,"Task delay accounting. If on, tracks scheduler delays but burns CPU/memory per task.",Admin (Observability overhead).
+    126,sysctl vm.block_dump,"If enabled, logs all block I/O to dmesg. Destroys disk performance and fills logs instantly. Should be 0.",Admin (Should be disabled).
+    127,cat /sys/fs/cgroup/memory/memory.kmem.limit_in_bytes,Kernel memory accounting. Historically added significant overhead to memory allocations.,Admin (Cgroup configurations).
+    128,cat /sys/fs/cgroup/cpuacct/cpuacct.usage,"CPU accounting. Necessary for Kubernetes metrics, but introduces minor overhead per CPU cycle.",Admin (Kubernetes baseline).
+    129,cat /sys/kernel/debug/kprobes/enabled,Checks if kprobes are active. Used by security agents (like Falco); adds trap overhead to kernel functions.,Admin (Security agent overhead).
+    130,sysctl kernel.ftrace_enabled,"Function tracing. If accidentally left on globally, it severely degrades overall system performance.",Admin (Should be disabled).
+    131,cat /proc/sys/crypto/fips_enabled,"FIPS mode. Restricts crypto algorithms to approved lists, sometimes disabling hardware offloading.",Admin (Compliance baseline).
+    132,cat /proc/sys/kernel/random/entropy_avail,"Entropy pool size. If this drops to 0, cryptographic functions (like TLS handshakes) will block and lag.",Admin (System health).
+    133,grep -i aes /proc/cpuinfo,"Checks for AES-NI hardware acceleration. Without this, TLS termination burns massive CPU.",Admin (Hardware baseline).
+    134,grep -i rdrand /proc/cpuinfo,Hardware RNG instruction. Speeds up random number generation for cryptography.,Admin (Hardware baseline).
+    135,sysctl net.ipv4.tcp_syncookies,SYN cookie generation. Protects against SYN floods but burns CPU during high legitimate connection rates.,Admin (Network security).
+    136,sysctl net.ipv4.conf.all.rp_filter,Reverse path filtering. Mitigates IP spoofing but adds route lookup overhead to every incoming packet.,Admin (Network security).
+    137,sysctl net.netfilter.nf_conntrack_max,"Maximum tracked connections. If iptables/kube-proxy is used, this consumes kernel memory.",Admin sets ceiling; App connection limits.
+    138,sysctl net.netfilter.nf_conntrack_tcp_timeout_established,How long the firewall holds memory for idle connections. High values cause memory exhaustion under load.,Admin (Network tuning).
+    139,lsmod | grep nf_conntrack,Checks if connection tracking is loaded. High-perf network apps (like load balancers) bypass this entirely.,Admin (Network routing architecture).
+    140,sysctl net.core.bpf_jit_enable,"eBPF JIT compiler. If 0, eBPF network/security policies are interpreted, making them massively slower.",Admin (System-wide).
+    141,sysctl net.core.bpf_jit_harden,Blinds eBPF constants to prevent JIT spraying attacks. Adds runtime overhead to eBPF execution.,Admin (Security vs. eBPF Speed).
+    142,grep -i smep /proc/cpuinfo,Supervisor Mode Execution Protection. Prevents the kernel from executing user-space code.,Admin (Hardware/Kernel).
+    143,grep -i smap /proc/cpuinfo,Supervisor Mode Access Prevention. Adds instruction overhead (CLAC/STAC) to every syscall reading user data.,Admin (Hardware/Kernel).
+    144,grep -i cet /proc/cpuinfo,"Control-flow Enforcement Technology. Uses shadow stacks to prevent ROP attacks, adding memory overhead.",Admin (Hardware/Kernel).
+    145,sysctl vm.mmap_rnd_bits,"ASLR entropy size for memory mapping. Higher entropy = more security, but can increase page table walk times.",Admin (Security baseline).
+    146,sysctl kernel.kexec_load_disabled,"Prevents loading a new kernel over the running one. Minor impact, but good for a locked-down baseline.",Admin (Security baseline).
+    147,cat /sys/kernel/mm/page_idle/bitmap,"Page idle tracking. Used by some memory reclaim agents, but checking it adds overhead.",Admin (System-wide).
+    148,cat /sys/kernel/security/lockdown,"Kernel lockdown mode. If enforced, blocks accessing /dev/mem or eBPF, breaking many high-perf profiling tools.",Admin (Security vs Observability).
+    149,"lsblk -o NAME,TYPE | grep crypt",Checks for LUKS full-disk encryption. Adds CPU latency to every physical disk read/write.,Admin (Storage provisioning).
+    150,sysctl kernel.modules_disabled,"If 1, prevents loading new kernel modules dynamically. Blocks loading high-perf drivers (like DPDK) after boot.",Admin (Security baseline).
+    EOF_CSV
+    
+    # 3. Generate the Python script
+    cat << 'EOF_PY' > generate_report.py
+    import csv
+    import subprocess
+    from datetime import datetime
+
+    # === READ CSV DATA ===
+    with open('metrics.csv', 'r') as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    # === CATEGORIZATION LOGIC ===
+    def categorize(command):
+        cmd = command.lower()
+        if any(k in cmd for k in ["net.", "ethtool", "ip link", "bpf_jit"]): 
+            return "Networking & Network Security"
+        if any(k in cmd for k in ["vm.", "mem", "hugepage", "swap", "slab", "numa"]): 
+            return "Memory & NUMA Architecture"
+        if any(k in cmd for k in ["fs.", "block", "mount", "lsblk", "disk", "aio", "file-max"]): 
+            return "Storage & File System I/O"
+        if any(k in cmd for k in ["cpu", "sched", "taskset", "chrt", "irq", "smt"]): 
+            return "CPU, Scheduling & Interrupts"
+        if any(k in cmd for k in ["security", "selinux", "audit", "mitigations", "apparmor", "seccomp", "vulnerabilities"]): 
+            return "Kernel Security & Mitigations"
+        return "General System & Kernel State"
+
+    def run_command(command):
+        try:
+            out = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=10)
+            if out.returncode == 0:
+                return out.stdout.strip() if out.stdout.strip() else "Command executed successfully, but returned no output."
+            else:
+                return f"Error / Not Configured: {out.stderr.strip() or out.stdout.strip()}"
+        except Exception as e:
+            return f"Failed to execute: {str(e)}"
+
+    # === PARSE AND EXECUTE ===
+    results = {}
+    for row in rows:
+        if 'Command' not in row or not row['Command']: 
+            continue
+            
+        cmd = row['Command']
+        metric = row.get('Metric Evaluated (Why it matters)', 'N/A')
+        responsibility = row.get('Tuning Responsibility', 'N/A')
+        category = categorize(cmd)
+        
+        output = run_command(cmd)
+        
+        if category not in results:
+            results[category] = []
+            
+        results[category].append({
+            "command": cmd,
+            "metric": metric,
+            "responsibility": responsibility,
+            "output": output
+        })
+
+    # === GENERATE HTML REPORT ===
+    html_content = [f"""<!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Comprehensive System Discovery Report</title>
+        <style>
+            body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f9f9fb; color: #333; margin: 0; padding: 20px; }}
+            h1 {{ text-align: center; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
+            .summary {{ text-align: center; margin-bottom: 30px; font-size: 0.9em; color: #7f8c8d; }}
+            h2 {{ color: #2980b9; margin-top: 40px; border-bottom: 1px solid #bdc3c7; padding-bottom: 5px; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 15px; background-color: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
+            th, td {{ text-align: left; padding: 12px 15px; border-bottom: 1px solid #e0e0e0; }}
+            th {{ background-color: #ecf0f1; color: #34495e; font-weight: bold; width: 25%; }}
+            .cmd-col {{ background-color: #fdfdfd; font-family: monospace; font-size: 0.95em; color: #c0392b; }}
+            .output-block {{ background-color: #272822; color: #f8f8f2; padding: 10px; border-radius: 4px; font-family: 'Courier New', Courier, monospace; font-size: 0.85em; white-space: pre-wrap; overflow-x: auto; max-height: 250px; }}
+            .metric-desc {{ font-size: 0.9em; line-height: 1.4; }}
+            .resp-badge {{ display: inline-block; background: #34495e; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.75em; }}
+        </style>
+    </head>
+    <body>
+        <h1>System Discovery & Configuration Report</h1>
+        <div class="summary">Generated on: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</div>
+    """]
+
+    for category, items in sorted(results.items()):
+        html_content.append(f"<h2>{category}</h2>")
+        html_content.append("<table>")
+        html_content.append("<tr><th>Command / Metric</th><th>Why it matters & Responsibility</th><th>Execution Result (Interpretation)</th></tr>")
+        
+        for item in items:
+            html_content.append(f"""
+            <tr>
+                <td class="cmd-col">
+                    <strong>Command:</strong><br/><code>{item['command']}</code>
+                </td>
+                <td>
+                    <div class="metric-desc"><strong>Purpose:</strong> {item['metric']}</div>
+                    <br/>
+                    <span class="resp-badge">{item['responsibility']}</span>
+                </td>
+                <td>
+                    <div class="output-block">{item['output']}</div>
+                </td>
+            </tr>
+            """)
+        html_content.append("</table>")
+
+    html_content.append("</body></html>")
+
+    # Write the output file
+    with open("/tmp/result/system_report.html", "w") as f:
+        f.write("\n".join(html_content))
+    EOF_PY
+
+    # 4. Execute the Python script
+    echo "Running Python discovery script..."
+    mkdir -p /tmp/result
+    python3 generate_report.py
+
+    echo "Discovery complete. Report generated at /tmp/result/system_report.html"

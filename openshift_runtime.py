@@ -1,492 +1,324 @@
+# Assisted by: Gemini 3
 import os
 import time
-import shutil
-import subprocess
-from pathlib import Path
 from kubernetes import client, config
-from kubernetes.stream import stream
 from urllib.parse import urlparse
 
-
-def get_current_namespace_from_serviceAccount() -> str:
-    namespace_path: Path = Path(
-        "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
-    )
-
-    if namespace_path.is_file():
-        with namespace_path.open("r") as f:
-            return f.read().strip()
-
-    # Fallback if the file isn't present (e.g., service account not mounted)
-    return "default"
-
-
-def get_current_namespace_from_kubeconfig() -> str:
-    try:
-        contexts, active_context = config.list_kube_config_contexts()
-    except config.ConfigException:
-        return "default"
-
-    namespace = active_context["context"].get("namespace")
-
-    if not namespace:
-        namespace = "default"
-
-    return namespace
-
-
-# Initialize Kubernetes client
-try:
-    config.load_incluster_config()
-    current_namespace = get_current_namespace_from_serviceAccount()
-except Exception:
-    config.load_kube_config()
-    current_namespace = get_current_namespace_from_kubeconfig()
-
-# Create API clients
-v1 = client.CoreV1Api()
-
-# Get namespace from environment variable, default to "default"
-NAMESPACE = os.getenv("COLDPRESS_NAMESPACE", current_namespace or "default")
-
-
-def copy_from_pod(pod_name, namespace, source_path, dest_path):
-    """Copy files from a pod using Kubernetes stream API instead of kubectl exec"""
-    exec_command = ["tar", "cf", "-", "-C", source_path, ".", "--exclude", "lost+found"]
-
-    print(f"Streaming tar data from pod {pod_name}...")
-    resp = stream(
-        v1.connect_get_namespaced_pod_exec,
-        pod_name,
-        namespace,
-        command=exec_command,
-        stderr=True,
-        stdin=False,
-        stdout=True,
-        tty=False,
-        _preload_content=False,
-    )
-
-    # Start tar extraction process
-    tar_process = subprocess.Popen(
-        ["tar", "xf", "-", "-C", dest_path],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-
-    try:
-        # Stream data from pod to tar process
-        while resp.is_open():
-            resp.update(timeout=1)
-            if resp.peek_stdout():
-                stdout_data = resp.read_stdout()
-                if isinstance(stdout_data, str):
-                    stdout_data = stdout_data.encode("utf-8")
-                tar_process.stdin.write(stdout_data)
-            if resp.peek_stderr():
-                stderr_data = resp.read_stderr()
-                print(f"Pod stderr: {stderr_data}")
-    finally:
-        resp.close()
-        tar_process.stdin.close()
-        tar_process.wait()
-
-    if tar_process.returncode != 0:
-        stderr_output = tar_process.stderr.read().decode()
-        raise Exception(f"tar extraction failed: {stderr_output}")
-
-
-def _copy_results_(params, pvc_dirs, pod_log):
-    run_params = params["run_params"]
-    node_name = params["node_name"]
-    tag = params["tag"]
-    pod_name = tag + "-" + node_name + "-" + run_params.get("label", "unlabeled_pod")
-    target_dir = params["target_dir"]
-    os.makedirs(f"{target_dir}", exist_ok=True)
-    if pod_log:
-        with open(target_dir + "/" + pod_name + ".log", "w") as f:
-            f.write(pod_log)
-    for i in range(len(pvc_dirs)):
-        for filename in run_params["files_to_copy"]:
-            if os.path.exists(f"{pvc_dirs[i]}/{filename}"):
-                shutil.copy(f"{pvc_dirs[i]}/{filename}", f"{target_dir}/{filename}")
-        for foldername in run_params["folders_to_copy"]:
-            if os.path.isdir(f"{pvc_dirs[i]}/{foldername}"):
-                if os.path.isdir(f"{target_dir}/{foldername}"):
-                    shutil.rmtree(f"{target_dir}/{foldername}")
-                shutil.copytree(
-                    f"{pvc_dirs[i]}/{foldername}", f"{target_dir}/{foldername}"
-                )
-
-
-def openshift_run(params):
-    run_params = params["run_params"]
-    node_name = params["node_name"]
-    tmpdir = params["tmpdir"]
-    tag = params["tag"]
-    blocking_params = run_params.get("blocking", {"type": "completion"})
-    blocking_type = blocking_params.get("type", "completion")
-    image = run_params["image"]
-    pod_name = tag + "-" + node_name + "-" + run_params.get("label", "unlabeled_pod")
-    pod_volumes = []
-    container_volume_mounts = []
-    created_pvcs = []
-    pod_log = ""
-    os.makedirs(f"{params['tmpdir']}", exist_ok=True)
-    try:
-        for i, mount_info in enumerate(run_params.get("ephemeral_mounts", [])):
-            mount_path = mount_info["target"]
-            storage_size = mount_info.get("size", "1Gi")  # Default to 1Gi if not set
-            volume_name = f"oneshot-pvc-mount-{i}"
-            pvc_name = f"{pod_name}-{volume_name}"
-            pvc_spec = client.V1PersistentVolumeClaim(
-                metadata=client.V1ObjectMeta(name=pvc_name),
-                spec=client.V1PersistentVolumeClaimSpec(
-                    access_modes=["ReadWriteOnce"],
-                    resources=client.V1ResourceRequirements(
-                        requests={"storage": storage_size}
-                    ),
-                ),
-            )
-            print(f"Creating PVC: {pvc_name} for mount {mount_path}")
-            v1.create_namespaced_persistent_volume_claim(
-                namespace=NAMESPACE, body=pvc_spec
-            )
-            created_pvcs.append({"name": pvc_name, "mount_path": mount_path})
-            pod_volumes.append(
-                {"name": volume_name, "persistentVolumeClaim": {"claimName": pvc_name}}
-            )
-            container_volume_mounts.append(
-                {"name": volume_name, "mountPath": mount_path, "readOnly": False}
-            )
-        for i, mount_info in enumerate(run_params.get("sys_mounts", [])):
-            volume_name = f"oneshot-hostpath-mount-{i}"
-            pod_volumes.append(
-                {
-                    "name": volume_name,
-                    "hostPath": {"path": mount_info["source"], "type": "Directory"},
-                }
-            )
-            container_volume_mounts.append(
-                {
-                    "name": volume_name,
-                    "mountPath": mount_info["target"],
-                    "readOnly": mount_info.get("read_only", False),
-                }
-            )
-        pod_spec = {
-            "apiVersion": "v1",
-            "kind": "Pod",
-            "metadata": {"name": pod_name, "labels": {"job": pod_name}},
-            "spec": {
-                "nodeName": node_name,
-                "hostNetwork": True
-                if run_params.get("network_mode") == "host"
-                else False,
-                "restartPolicy": "Never",
-                "volumes": pod_volumes,  # <-- Uses the combined list of PVCs and hostPaths
-                "containers": [
-                    {
-                        "name": "main",
-                        "image": image,
-                        "volumeMounts": container_volume_mounts,
-                        "env": run_params["env"],
-                        "args": run_params["args"],
-                        "resources": run_params.get("resources", {}),
-                    }
-                ],
-            },
-        }
-        if run_params["command"]:
-            pod_spec["spec"]["containers"][0]["command"] = run_params["command"]
-        if blocking_type == "endpoint":
-            address = blocking_params.get("address", "http://127.0.0.1:8000")
-            initialDelaySeconds = blocking_params.get("initialDelaySeconds", 30)
-            periodSeconds = blocking_params.get("periodSeconds", 30)
-            failureThreshold = blocking_params.get("failureThreshold", 10)
-            if not address:
-                raise ValueError("'endpoint' blocking type requires an 'address' key")
-            parsed_url = urlparse(address)
-            port = parsed_url.port
-            scheme = parsed_url.scheme.upper()
-            path = parsed_url.path or "/"
-            if not port:
-                raise ValueError(
-                    f"Could not determine port from endpoint address: {address}"
-                )
-            pod_spec["spec"]["containers"][0]["readinessProbe"] = {
-                "httpGet": {"path": path, "port": port, "scheme": scheme},
-                "initialDelaySeconds": initialDelaySeconds,
-                "periodSeconds": periodSeconds,
-                "failureThreshold": failureThreshold,
-            }
-        print(f"Creating pod: {pod_name}")
-        v1.create_namespaced_pod(namespace=NAMESPACE, body=pod_spec)
-        print(f"Waiting for pod {pod_name} based on condition: {blocking_type}")
-        while True:
-            try:
-                pod = v1.read_namespaced_pod(name=pod_name, namespace=NAMESPACE)
-            except client.exceptions.ApiException as e:
-                if e.status == 404:
-                    print(
-                        f"Pod {pod_name} not found. Assuming creation failed or it was deleted."
-                    )
-                    break
-                raise
-            phase = pod.status.phase
-            if blocking_type == "completion":
-                if phase in ["Succeeded", "Failed"]:
-                    print(f"Pod completed with phase: {phase}")
-                    pod_log = (
-                        v1.read_namespaced_pod_log(
-                            name=pod_name, namespace=NAMESPACE, container="main"
-                        )
-                        if run_params.get("log", False)
-                        else ""
-                    )
-                    break
-            elif blocking_type == "endpoint":
-                if phase == "Failed":
-                    print(f"Pod {pod_name} failed before becoming ready.")
-                    pod_log = (
-                        v1.read_namespaced_pod_log(
-                            name=pod_name, namespace=NAMESPACE, container="main"
-                        )
-                        if run_params.get("log", False)
-                        else ""
-                    )
-                    break
-                if pod.status.conditions:
-                    ready_condition = next(
-                        (c for c in pod.status.conditions if c.type == "Ready"), None
-                    )
-                    if ready_condition and ready_condition.status == "True":
-                        print(f"Pod {pod_name} is Ready at endpoint.")
-                        break
-            elif blocking_type == "delay":
-                if phase == "Failed" or phase == "Succeeded":
-                    print(f"Pod {pod_name} {phase} before delay could complete.")
-                    pod_log = (
-                        v1.read_namespaced_pod_log(
-                            name=pod_name, namespace=NAMESPACE, container="main"
-                        )
-                        if run_params.get("log", False)
-                        else ""
-                    )
-                    break
-                if phase == "Running":
-                    delay_seconds = blocking_params.get("delay", 10)
-                    print(
-                        f"Pod {pod_name} is Running. Waiting for {delay_seconds} seconds..."
-                    )
-                    time.sleep(delay_seconds)
-                    print("Delay complete.")
-                    break
-            time.sleep(2)
-    finally:
-        if blocking_type == "completion":
-            print("Starting resource cleanup...")
-            try:
-                print(f"Deleting pod: {pod_name}")
-                v1.delete_namespaced_pod(name=pod_name, namespace=NAMESPACE)
-            except Exception as e:
-                print(f"Warning: Failed to delete pod {pod_name}. Error: {e}")
-
-    if blocking_type in ["endpoint", "delay"]:
-        resources = {"pod_name": pod_name, "pvc": []}
-        for pvc_info in created_pvcs:
-            pvc_name = pvc_info["name"]
-            resources["pvc"].append(pvc_name)
-        return resources
-    else:
-        dest_base_dir_list = []
-        helper_pods_created = []
+class runtime:
+    def __init__(self):
         try:
-            print("Pod completed, copying data...")
-            for pvc_info in created_pvcs:
-                pvc_name = pvc_info["name"]
-                dest_base_dir = os.path.join(tmpdir, f"{pod_name}_{pvc_name}")
-                dest_base_dir_list.append(dest_base_dir)
-                if os.path.exists(dest_base_dir):
-                    print(f"Removing existing directory: {dest_base_dir}")
-                    shutil.rmtree(dest_base_dir)
-                os.makedirs(dest_base_dir, exist_ok=True)
-                helper_pod_name = f"{pvc_name}-extractor"
-                helper_mount_point = "/data"
-                print(f"Creating helper pod: {helper_pod_name}")
-                v1.create_namespaced_pod(
-                    namespace=NAMESPACE,
-                    body={
-                        "apiVersion": "v1",
-                        "kind": "Pod",
-                        "metadata": {"name": helper_pod_name},
-                        "spec": {
-                            "nodeName": node_name,
-                            "restartPolicy": "Never",
-                            "containers": [
-                                {
-                                    "name": "h",
-                                    "image": "alpine:latest",
-                                    "command": ["sleep", "3600"],
-                                    "volumeMounts": [
-                                        {"name": "v", "mountPath": helper_mount_point}
-                                    ],
-                                }
-                            ],
-                            "volumes": [
-                                {
-                                    "name": "v",
-                                    "persistentVolumeClaim": {"claimName": pvc_name},
-                                }
-                            ],
-                        },
-                    },
+            config.load_incluster_config()
+        except Exception:
+            config.load_kube_config()
+        self.v1 = client.CoreV1Api()
+        self.batch_v1 = client.BatchV1Api()
+        self.custom_api = client.CustomObjectsApi()
+
+
+    def get_queue_name(self, namespace):
+        return f"local-queue-{namespace}"
+
+
+    def get_nodes(self):
+        nodes = self.v1.list_node().items
+        node_data = {}
+        for node in nodes:
+            labels = node.metadata.labels or {}
+            if "coldpress.node" in labels:
+                nodeid = labels["coldpress.node"]
+                allocatable = node.status.allocatable or {}
+                gpu_count_str = allocatable.get("nvidia.com/gpu", "0")
+                try:
+                    gpu_count = int(gpu_count_str)
+                except ValueError:
+                    gpu_count = 0
+                gpu_availability_map = {}
+                for i in range(gpu_count):
+                    gpu_id = str(i)
+                    gpu_availability_map[gpu_id] = False
+                node_data[str(nodeid)] = {
+                    "name": node.metadata.name,
+                    "gpus": gpu_availability_map,
+                }
+        return node_data
+
+
+    def wait_for_pvc_bound(self, pvc_name, namespace, timeout=120):
+        print(f"Waiting for PVC {pvc_name} to bind...")
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                pvc = self.v1.read_namespaced_persistent_volume_claim(
+                    name=pvc_name, 
+                    namespace=namespace
                 )
-                helper_pods_created.append(helper_pod_name)
-                print(f"Waiting for {helper_pod_name} to be Running...")
-                while True:
-                    try:
-                        pod = v1.read_namespaced_pod(
-                            name=helper_pod_name, namespace=NAMESPACE
-                        )
-                        if pod.status.phase == "Running":
-                            print("Helper pod is Running.")
-                            break
-                        if pod.status.phase in ["Failed", "Succeeded"]:
-                            raise Exception(
-                                f"Helper pod {helper_pod_name} failed to start."
-                            )
-                    except client.exceptions.ApiException as e:
-                        if e.status != 404:
-                            raise
-                    time.sleep(1)
-                print(
-                    f"Copying data from {helper_pod_name}:{helper_mount_point} to {dest_base_dir}"
+                if pvc.status.phase == "Bound":
+                    print(f"PVC {pvc_name} is Bound.")
+                    return True
+            except client.exceptions.ApiException as e:
+                pass
+            time.sleep(2)
+        return False
+
+
+    def create_pvc_if_not_exists(self, name, namespace, size):
+        try:
+            self.v1.read_namespaced_persistent_volume_claim(name, namespace)
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                pvc = client.V1PersistentVolumeClaim(
+                    metadata=client.V1ObjectMeta(name=name),
+                    spec=client.V1PersistentVolumeClaimSpec(
+                        storage_class_name="nfs-csi",
+                        access_modes=["ReadWriteMany"],
+                        resources=client.V1ResourceRequirements(requests={"storage": size})
+                    )
                 )
-                copy_from_pod(
-                    helper_pod_name, NAMESPACE, helper_mount_point, dest_base_dir
-                )
+                self.v1.create_namespaced_persistent_volume_claim(namespace, pvc)
+                self.wait_for_pvc_bound(name, namespace)
+
+
+    def get_namespace_fs_group(self, namespace):
+        try:
+            ns = self.v1.read_namespace(namespace)
+            ann = ns.metadata.annotations or {}
+            group_range = ann.get("openshift.io/sa.scc.supplemental-groups") or ann.get("openshift.io/sa.scc.uid-range")
+            if group_range:
+                return int(group_range.split('/')[0])
         except Exception as e:
-            print(f"Warning: Failed to copy data {pod_name}. Error: {e}")
-        finally:
-            for helper_pod_name in helper_pods_created:
-                try:
-                    print(f"Deleting helper pod: {helper_pod_name}")
-                    v1.delete_namespaced_pod(name=helper_pod_name, namespace=NAMESPACE)
-                except Exception as e:
-                    print(
-                        f"Warning: Failed to delete helper pod {helper_pod_name}. Error: {e}"
-                    )
-            for pvc_info in created_pvcs:
-                pvc_name = pvc_info["name"]
-                try:
-                    print(f"Deleting PVC: {pvc_name}")
-                    v1.delete_namespaced_persistent_volume_claim(
-                        name=pvc_name, namespace=NAMESPACE
-                    )
-                except Exception as e:
-                    print(f"Warning: Failed to delete PVC {pvc_name}. Error: {e}")
-        _copy_results_(params, dest_base_dir_list, pod_log)
-        shutil.rmtree(params["tmpdir"], ignore_errors=True)
+            print(f"Warning: Could not determine fsGroup from namespace annotations: {e}")
         return None
 
 
-def openshift_cleanup(params, resources):
-    run_params = params["run_params"]
-    node_name = params["node_name"]
-    tmpdir = params["tmpdir"]
-    tag = params["tag"]
-    pod_name = resources.get("pod_name")
-    pod_log = ""
-    if pod_name:
-        pod_log = (
-            v1.read_namespaced_pod_log(
-                name=pod_name, namespace=NAMESPACE, container="main"
-            )
-            if run_params.get("log", False)
-            else ""
-        )
-        print(f"Deleting pod: {pod_name}")
-        v1.delete_namespaced_pod(name=pod_name, namespace=NAMESPACE)
-    else:
-        pod_name = (
-            tag + "-" + node_name + "-" + run_params.get("label", "unlabeled_pod")
-        )
-    print("Copying data for pvcs...")
-    dest_base_dir_list = []
-    for pvc_name in resources.get("pvc", []):
+    def status(self, job_id, namespace):
+        name = f"cpj-{job_id}"
         try:
-            dest_base_dir = os.path.join(tmpdir, f"{pod_name}_{pvc_name}")
-            dest_base_dir_list.append(dest_base_dir)
-            if os.path.exists(dest_base_dir):
-                print(f"Removing existing directory: {dest_base_dir}")
-                shutil.rmtree(dest_base_dir)
-            os.makedirs(dest_base_dir, exist_ok=True)
-            helper_pod_name = f"{pvc_name}-extractor"
-            helper_mount_point = "/data"
-            print(f"Creating helper pod: {helper_pod_name}")
-            v1.create_namespaced_pod(
-                namespace=NAMESPACE,
-                body={
-                    "apiVersion": "v1",
-                    "kind": "Pod",
-                    "metadata": {"name": helper_pod_name},
-                    "spec": {
-                        "nodeName": node_name,
-                        "restartPolicy": "Never",
-                        "containers": [
-                            {
-                                "name": "h",
-                                "image": "alpine:latest",
-                                "command": ["sleep", "3600"],
-                                "volumeMounts": [
-                                    {"name": "v", "mountPath": helper_mount_point}
-                                ],
-                            }
-                        ],
-                        "volumes": [
-                            {
-                                "name": "v",
-                                "persistentVolumeClaim": {"claimName": pvc_name},
-                            }
-                        ],
-                    },
-                },
+            jobset = self.custom_api.get_namespaced_custom_object(
+                group="jobset.x-k8s.io", version="v1alpha2",
+                namespace=namespace, plural="jobsets", name=name
             )
-            print(f"Waiting for {helper_pod_name} to be Running...")
-            while True:
-                try:
-                    pod = v1.read_namespaced_pod(
-                        name=helper_pod_name, namespace=NAMESPACE
-                    )
-                    if pod.status.phase == "Running":
-                        print("Helper pod is Running.")
-                        break
-                    if pod.status.phase in ["Failed", "Succeeded"]:
-                        raise Exception(
-                            f"Helper pod {helper_pod_name} failed to start."
-                        )
-                except client.exceptions.ApiException as e:
-                    if e.status != 404:
-                        raise
-                time.sleep(1)
-            print(
-                f"Copying data from {helper_pod_name}:{helper_mount_point} to {dest_base_dir}"
-            )
-            copy_from_pod(helper_pod_name, NAMESPACE, helper_mount_point, dest_base_dir)
-            print(f"Deleting helper pod: {helper_pod_name}")
-            v1.delete_namespaced_pod(name=helper_pod_name, namespace=NAMESPACE)
-        except Exception as e:
-            print(f"Error: {e}")
-        finally:
+            if jobset.get("spec", {}).get("suspend", False) is True:
+                return {"state": "Pending (Suspended)"}
+            conditions = jobset.get("status", {}).get("conditions", [])
+            for c in conditions:
+                if c["type"] == "Completed" and c["status"] == "True":
+                    return {"state": "Completed"}
+                if c["type"] == "Failed" and c["status"] == "True":
+                    return {"state": "Failed", "reason": c.get("message", "Unknown")}
+            replicated_jobs_status = jobset.get("status", {}).get("replicatedJobsStatus", [])
+            ready_count = sum(rjs.get("ready", 0) for rjs in replicated_jobs_status)
+            if ready_count > 0:
+                return {"state": "Ready"}
+            return {"state": "Running"}
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                return {"state": "Unknown"}
+            raise e
+
+
+    def wait_for_job_completion(self, name, namespace, timeout=120):
+        start_time = time.time()
+        while time.time() - start_time < timeout:
             try:
-                print(f"Deleting PVC: {pvc_name}")
-                v1.delete_namespaced_persistent_volume_claim(
-                    name=pvc_name, namespace=NAMESPACE
-                )
-            except Exception as e:
-                print(f"Warning: Failed to delete PVC {pvc_name}. Error: {e}")
-    _copy_results_(params, dest_base_dir_list, pod_log)
-    shutil.rmtree(params["tmpdir"], ignore_errors=True)
-    return
+                job = self.batch_v1.read_namespaced_job_status(name, namespace)
+                if job.status.succeeded and job.status.succeeded > 0:
+                    return True
+                if job.status.failed and job.status.failed > 0:
+                    print(f"Helper Job {name} failed.")
+                    return False
+            except client.exceptions.ApiException:
+                pass
+            time.sleep(2)
+        print(f"Helper Job {name} timed out.")
+        return False
+
+
+    def collect_logs_to_pvc(self, job_id, namespace):
+        """
+        To Do
+        """
+        pass 
+
+
+    def delete(self, job_id, namespace):
+        name = f"cpj-{job_id}"
+        try:
+            self.custom_api.delete_namespaced_custom_object(
+                group="jobset.x-k8s.io", version="v1alpha2",
+                namespace=namespace, plural="jobsets", name=name,
+                body=client.V1DeleteOptions(propagation_policy="Foreground")
+            )
+        except Exception:
+            pass
+        try:
+            services = self.v1.list_namespaced_service(
+                namespace, label_selector=f"coldpress/gid={job_id}"
+            )
+            for svc in services.items:
+                self.v1.delete_namespaced_service(svc.metadata.name, namespace)
+                print(f"Deleted Service {svc.metadata.name}")
+        except Exception:
+            pass
+
+
+    def run(self, job_id, task_list, namespace, data_pvc_name, model_pvc_name="coldpress-model-storage"):
+        jobset_name = f"cpj-{job_id}"
+        queue_name = self.get_queue_name(namespace)
+        replicated_jobs = []
+        api_client = client.ApiClient()
+        previous_job_name = None
+        previous_job_blocking = None
+        for task in task_list:
+            task_id = task["task_id"]
+            params = task["params"]
+            run_params = params["run_params"]
+            blocking_params = run_params.get("blocking", {"type": "completion"})
+            volumes = []
+            volume_mounts = []
+            volumes.append({
+                "name": "coldpress-data",
+                "persistentVolumeClaim": {"claimName": data_pvc_name}
+            })
+            volume_mounts.append({
+                "name": "coldpress-data",
+                "mountPath": "/mnt/coldpress-data"
+            })
+            for i, mount in enumerate(run_params.get("ephemeral_mounts", [])):
+                volume_mounts.append({
+                    "name": "coldpress-data",
+                    "mountPath": mount["target"],
+                    "subPath": params["result_path"] 
+                })
+            for i, mount in enumerate(run_params.get("sys_mounts", [])):
+                volumes.append({
+                    "name": f"sys-{i}",
+                    "hostPath": {"path": mount["source"], "type": "Directory"}
+                })
+                volume_mounts.append({
+                    "name": f"sys-{i}",
+                    "mountPath": mount["target"],
+                    "readOnly": mount.get("read_only", False)
+                })
+            init_containers = []
+            if blocking_params.get("type") == "delay":
+                init_containers.append(client.V1Container(
+                    name="delay",
+                    image="alpine:latest",
+                    command=["sleep", str(blocking_params.get("delay", 10))]
+                ))
+            resources = run_params.get("resources", {})
+            if "limits" not in resources:
+                resources["limits"] = {}
+            if "nvidia.com/gpu" not in resources["limits"]:
+                resources["limits"]["nvidia.com/gpu"] = "0"
+            main_cmd = run_params.get("command")
+            main_args = run_params.get("args")
+            pod_annotations = run_params.get("annotations", {})
+            container_security_ctx = None
+            if run_params.get("privileged"):
+                container_security_ctx = client.V1SecurityContext(privileged=True)
+            pod_template = client.V1PodTemplateSpec(
+                metadata=client.V1ObjectMeta(
+                    labels={"app": f"task-{task_id}", "coldpress/gid": str(job_id)},
+                    annotations=pod_annotations
+                ),
+                spec=client.V1PodSpec(
+                    security_context=None,
+                    node_selector={"coldpress.node": params['node_id']},
+                    init_containers=init_containers,
+                    host_network=True if run_params.get("network_mode") == "host" else False,
+                    restart_policy="Never",
+                    volumes=volumes,
+                    containers=[
+                        client.V1Container(
+                            name="main",
+                            image=run_params["image"],
+                            security_context=container_security_ctx,
+                            volume_mounts=volume_mounts,
+                            env=[client.V1EnvVar(name=k, value=str(v)) for k, v in run_params.get("env", {}).items()] 
+                                if isinstance(run_params.get("env"), dict) else run_params.get("env"),
+                            args=run_params.get("args"),
+                            command=run_params.get("command"),
+                            resources=client.V1ResourceRequirements(
+                                requests=resources.get("limits", {}),
+                                limits=resources.get("limits", {})
+                            ) if resources else None,
+                        )
+                    ],
+                ),
+            )
+            if blocking_params.get("type") == "endpoint":
+                try:
+                    address = blocking_params.get("address", "")
+                    parsed = urlparse(address)
+                    if parsed.port:
+                        svc_name = f"s-{job_id}-{task_id}" 
+                        svc_body = client.V1Service(
+                            metadata=client.V1ObjectMeta(
+                                name=svc_name,
+                                namespace=namespace,
+                                labels={"coldpress/gid": str(job_id)}
+                            ),
+                            spec=client.V1ServiceSpec(
+                                selector={"app": f"task-{task_id}", "coldpress/gid": str(job_id)},
+                                ports=[client.V1ServicePort(port=parsed.port, target_port=parsed.port)],
+                                type="ClusterIP"
+                            )
+                        )
+                        try:
+                            self.v1.create_namespaced_service(namespace, svc_body)
+                        except client.exceptions.ApiException as e:
+                            if e.status != 409: raise
+                except Exception as e:
+                    print(f"Failed to create service for task {task_id}: {e}")
+            if blocking_params.get("type") == "endpoint":
+                try:
+                    address = blocking_params.get("address", "http://127.0.0.1:8000")
+                    parsed = urlparse(address)
+                    pod_template.spec.containers[0].readiness_probe = client.V1Probe(
+                        http_get=client.V1HTTPGetAction(path=parsed.path or "/", port=parsed.port, scheme=parsed.scheme.upper()),
+                        initial_delay_seconds=30, period_seconds=30, failure_threshold=10
+                    )
+                except Exception:
+                    pass
+            replicated_job = {
+                "name": f"task-{task_id}",
+                "replicas": 1,
+                "template": {
+                    "spec": {
+                        "parallelism": 1, "completions": 1, "backoffLimit": 0,
+                        "template": api_client.sanitize_for_serialization(pod_template)
+                    }
+                }
+            }
+            if previous_job_name:
+                replicated_job["dependsOn"] = [{
+                    "name": previous_job_name,
+                    "status": "Complete" if previous_job_blocking == "completion" else "Ready"
+                }]
+            replicated_jobs.append(replicated_job)
+            previous_job_name = replicated_job["name"]
+            previous_job_blocking = blocking_params.get("type")
+        driver_jobs = [f"task-{t['task_id']}" for t in task_list if t["params"]["run_params"].get("blocking", {}).get("type") == "completion"]
+        jobset_spec = {
+            "suspend": True,
+            "replicatedJobs": replicated_jobs,
+        }
+        if driver_jobs:
+            jobset_spec["successPolicy"] = {"operator": "All", "targetReplicatedJobs": driver_jobs}
+
+        jobset_body = {
+            "apiVersion": "jobset.x-k8s.io/v1alpha2",
+            "kind": "JobSet",
+            "metadata": {
+                "name": jobset_name,
+                "namespace": namespace,
+                "labels": {"kueue.x-k8s.io/queue-name": queue_name}
+            },
+            "spec": jobset_spec
+        }
+        try:
+            self.custom_api.create_namespaced_custom_object("jobset.x-k8s.io", "v1alpha2", namespace, "jobsets", jobset_body)
+        except client.exceptions.ApiException as e:
+            print(f"Error creating JobSet: {e}")
+            raise e

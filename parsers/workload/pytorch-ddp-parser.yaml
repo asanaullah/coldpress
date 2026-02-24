@@ -1,0 +1,174 @@
+# Assisted by: Gemini 3
+apiVersion: coldpress.io/v1
+kind: WorkloadTemplate
+metadata:
+  name: pytorch-ddp-parser
+  namespace: coldpress-admin
+spec:
+  requirements:
+    num_nodes: "1"
+    gpus_per_node: "{num_gpus}"
+    roce_nics_per_node: "0"
+  user_params:
+    - dataset
+    - train_test_split
+    - epochs
+    - batch_size
+    - hidden_size
+    - lr
+    - output_dir
+  allocator_params:
+    - num_gpus
+    - node
+  image: "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime"
+  env:
+    - name: "HOME"
+      value: "/tmp"
+  command: ["bash", "-c"]
+  args:
+    - |
+      pip install -q torchvision
+      cat << 'EOF' > /tmp/train.py
+      import os, json, time, torch
+      import torch.nn as nn
+      import torch.optim as optim
+      import torchvision
+      import torchvision.transforms as transforms
+      from torch.utils.data import DataLoader, random_split
+      from torch.utils.data.distributed import DistributedSampler
+
+      local_rank = int(os.environ['LOCAL_RANK'])
+      torch.cuda.set_device(local_rank)
+      torch.distributed.init_process_group('nccl')
+
+      # 1. Dataset Loading (Synchronized)
+      transform = transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: torch.flatten(x))])
+      
+      if local_rank == 0:
+          if "{dataset}".lower() == "mnist":
+              torchvision.datasets.MNIST(root='/tmp/data', train=True, download=True, transform=transform)
+          else:
+              raise ValueError("Unsupported dataset")
+      
+      torch.distributed.barrier()
+      
+      if "{dataset}".lower() == "mnist":
+          full_dataset = torchvision.datasets.MNIST(root='/tmp/data', train=True, download=False, transform=transform)
+
+      input_dim = full_dataset[0][0].numel()
+      if hasattr(full_dataset, 'classes'):
+          output_dim = len(full_dataset.classes)
+      else:
+          output_dim = 10
+
+      # 2. Train-Test Split
+      split_ratio = {train_test_split}
+      train_size = int(split_ratio * len(full_dataset))
+      test_size = len(full_dataset) - train_size
+      
+      generator = torch.Generator().manual_seed(42)
+      train_dataset, test_dataset = random_split(full_dataset, [train_size, test_size], generator=generator)
+
+      train_sampler = DistributedSampler(train_dataset)
+      train_loader = DataLoader(train_dataset, batch_size={batch_size}, sampler=train_sampler)
+      test_loader = DataLoader(test_dataset, batch_size={batch_size})
+
+      # 3. Model Definition
+      class DynamicMLP(nn.Module):
+          def __init__(self):
+              super().__init__()
+              self.layers = nn.Sequential(
+                  nn.Linear(input_dim, {hidden_size}),
+                  nn.ReLU(),
+                  nn.Linear({hidden_size}, {hidden_size}),
+                  nn.ReLU(),
+                  nn.Linear({hidden_size}, output_dim)
+              )
+          def forward(self, x):
+              return self.layers(x)
+
+      model = DynamicMLP().cuda(local_rank)
+      model = nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
+      optimizer = optim.SGD(model.parameters(), lr={lr})
+      criterion = nn.CrossEntropyLoss()
+
+      # 4. Training Loop with Logging Every 10 Epochs
+      start = time.time()
+      accuracy = 0.0  # Initialize in case epochs < 10
+      for epoch in range({epochs}):
+          model.train()
+          train_sampler.set_epoch(epoch)
+          running_loss = 0.0
+          
+          for data, target in train_loader:
+              data, target = data.cuda(local_rank), target.cuda(local_rank)
+              optimizer.zero_grad()
+              output = model(data)
+              loss = criterion(output, target)
+              loss.backward()
+              optimizer.step()
+              running_loss += loss.item()
+          
+          # --- EVALUATE & PRINT EVERY 10 EPOCHS (and the final epoch) ---
+          if (epoch + 1) % 10 == 0 or (epoch + 1) == {epochs}:
+              model.eval()
+              correct = 0
+              total = 0
+              with torch.no_grad():
+                  for data, target in test_loader:
+                      data, target = data.cuda(local_rank), target.cuda(local_rank)
+                      outputs = model(data)
+                      _, predicted = torch.max(outputs.data, 1)
+                      total += target.size(0)
+                      correct += (predicted == target).sum().item()
+              
+              if local_rank == 0:
+                  avg_loss = running_loss / len(train_loader)
+                  accuracy = 100 * correct / total
+                  print(f"Epoch [{{epoch+1}}/{epochs}] - Train Loss: {{avg_loss:.4f}} - Test Accuracy: {{accuracy:.2f}}%", flush=True)
+
+      end = time.time()
+
+      # 5. Evaluation & Results Storage (on Master Node)
+      if local_rank == 0:
+          num_params = sum(p.numel() for p in model.parameters())
+          
+          res = dict(
+              dataset="{dataset}",
+              epochs={epochs},
+              batch_size={batch_size},
+              hidden_size={hidden_size},
+              train_test_split={train_test_split},
+              num_gpus={num_gpus},
+              time_seconds=end-start,
+              final_loss=float(loss),
+              accuracy=accuracy,
+              model_params=num_params,
+              input_dim=input_dim,
+              output_dim=output_dim
+          )
+          
+          os.makedirs("{output_dir}", exist_ok=True)
+          
+          # Save the stats JSON
+          with open("{output_dir}/training_stats.json", "w") as f:
+              json.dump(res, f)
+              
+          # Save the model weights (using .module to unwrap from DDP)
+          torch.save(model.module.state_dict(), "{output_dir}/model_weights.pth")
+          print("Saved model weights to {output_dir}/model_weights.pth", flush=True)
+
+      EOF
+      torchrun --standalone --nproc_per_node={num_gpus} /tmp/train.py
+  blocking:
+    type: "completion"
+  resources:
+    limits:
+      nvidia.com/gpu: "{num_gpus}"
+  ephemeral_mounts:
+    - target: "{output_dir}"
+      size: "500Mi"
+  sys_mounts: []
+  files_to_copy: 
+    - "training_stats.json"
+    - "model_weights.pth"

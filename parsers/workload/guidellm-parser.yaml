@@ -1,0 +1,42 @@
+# Assisted by: Gemini 3
+apiVersion: coldpress.io/v1
+kind: WorkloadTemplate
+metadata:
+  name: guidellm-parser
+  namespace: coldpress-admin
+spec:
+  requirements:
+    num_nodes: "1"
+    gpus_per_node: "0"
+    roce_nics_per_node: "0"
+  user_params:
+    - target_task
+    - port
+    - max_seconds
+    - rate_type
+    - rate
+    - data
+  allocator_params: []
+  image: "ghcr.io/vllm-project/guidellm:nightly"
+  env:
+    - name: "HOME"
+      value: "/tmp"
+  command: ["bash", "-c"]
+  args:
+    - >-
+      guidellm benchmark 
+      --target "http://{target_nodeip}:{port}" 
+      --output-path "/tmp/result/benchmarks.json" 
+      --disable-progress 
+      --max-seconds {max_seconds} 
+      --rate-type {rate_type} 
+      --rate {rate} 
+      --data "{data}"
+  blocking:
+    type: "completion"
+  ephemeral_mounts:
+    - target: "/tmp/result"
+      size: "100Mi"
+  sys_mounts: []
+  files_to_copy: 
+    - "benchmarks.json"

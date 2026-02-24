@@ -1,0 +1,75 @@
+# Assisted by: Gemini 3
+apiVersion: coldpress.io/v1
+kind: WorkloadTemplate
+metadata:
+  name: gromacs-parser
+  namespace: coldpress-admin
+spec:
+  requirements:
+    num_nodes: "1"
+    gpus_per_node: "{num_gpus}"
+    roce_nics_per_node: "0"
+  user_params:
+    - npme
+    - benchmark_url
+    - dataset_dir
+    - steps
+  allocator_params:
+    - num_gpus
+  image: "nvcr.io/hpc/gromacs:2023.2"
+  env:
+    - name: "HOME"
+      value: "/tmp"
+  args:
+    - "bash"
+    - "-c"
+    - |
+      set -e
+      mkdir -p /tmp/result
+      cd /tmp/result
+      
+      echo "Downloading GROMACS benchmark dataset from {benchmark_url}..."
+      if command -v curl &> /dev/null; then
+          curl -sSL {benchmark_url} -o benchmark.tar.gz
+      elif command -v wget &> /dev/null; then
+          wget -q {benchmark_url} -O benchmark.tar.gz
+      elif command -v python3 &> /dev/null; then
+          python3 -c "import urllib.request; urllib.request.urlretrieve('{benchmark_url}', 'benchmark.tar.gz')"
+      else
+          apt-get update -y && apt-get install -y wget
+          wget -q {benchmark_url} -O benchmark.tar.gz
+      fi
+      
+      tar -xzf benchmark.tar.gz
+      
+      echo "Compiling the topology..."
+      cd {dataset_dir}
+      
+      gmx grompp -f pme.mdp -c conf.gro -p topol.top -o benchmark.tpr -maxwarn 2
+      
+      echo "Running GROMACS mdrun using {num_gpus} GPUs (PME ranks: {npme})..."
+      gmx mdrun -ntmpi {num_gpus} \
+                -npme {npme} \
+                -nb gpu \
+                -pme gpu \
+                -update gpu \
+                -s benchmark.tpr \
+                -nsteps {steps} \
+                -v \
+                -deffnm md_benchmark
+                
+      echo "Simulation complete. Moving results for extraction..."
+      mv md_benchmark.log md_benchmark.edr md_benchmark.cpt /tmp/result/
+  blocking:
+    type: "completion"
+  resources:
+    limits:
+      nvidia.com/gpu: "{num_gpus}"
+  ephemeral_mounts:
+    - target: "/tmp/result"
+      size: "1000Mi"
+  sys_mounts: []
+  files_to_copy: 
+    - "md_benchmark.log"
+    - "md_benchmark.edr"
+    - "md_benchmark.cpt"

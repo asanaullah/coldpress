@@ -1,0 +1,19 @@
+# Assisted by: Gemini 3
+apiVersion: v1
+kind: Pod
+metadata:
+  name: researcher-a-data-explorer
+  namespace: researcher-a
+spec:
+  restartPolicy: Never
+  containers:
+    - name: explorer
+      image: alpine
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - mountPath: "/data"
+          name: myvol
+  volumes:
+    - name: myvol
+      persistentVolumeClaim:
+        claimName: researcher-a-storage

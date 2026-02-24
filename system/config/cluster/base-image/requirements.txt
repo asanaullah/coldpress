@@ -1,0 +1,7 @@
+kopf
+pyyaml
+kubernetes
+pydantic
+pre-commit
+ruff
+pytest

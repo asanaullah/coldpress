@@ -1,0 +1,41 @@
+# Assisted by: Gemini 3
+apiVersion: coldpress.io/v1
+kind: WorkloadTemplate
+metadata:
+  name: vllm-parser
+  namespace: coldpress-admin
+spec:
+  requirements:
+    num_nodes: "1"
+    gpus_per_node: "{num_gpus}"
+    roce_nics_per_node: "0"
+  user_params:
+    - model
+    - max_model_len
+    - port
+    - gpu_memory_utilization
+  allocator_params:
+    - num_gpus
+  image: "docker.io/vllm/vllm-openai:latest"
+  env:
+    - name: "VLLM_USE_V1"
+      value: "1"
+    - name: "HOME"
+      value: "/tmp"
+  command: ["bash", "-c"]
+  args:
+    - >-
+      python3 -m vllm.entrypoints.openai.api_server 
+      --model {model} 
+      --max-model-len {max_model_len} 
+      --port {port} 
+      --gpu-memory-utilization {gpu_memory_utilization}
+  blocking:
+    type: "endpoint"
+    address: "http://127.0.0.1:{port}/health"
+  resources:
+    limits:
+      nvidia.com/gpu: "{num_gpus}"
+  ephemeral_mounts: []
+  sys_mounts: []
+  files_to_copy: []

@@ -1,0 +1,21 @@
+# Assisted by: Gemini 3
+apiVersion: coldpress.io/v1
+kind: ColdpressResourceAllocator
+metadata:
+  name: ddp-train
+  namespace: researcher-a
+spec:
+  storage:
+    results: researcher-a-storage
+  tasks:
+    - name: "ddp-training-run"
+      template: "pytorch-ddp-parser"
+      params:
+        num_gpus: 4
+        dataset: "mnist"
+        train_test_split: 0.8
+        epochs: 50
+        batch_size: 128
+        hidden_size: 4096
+        lr: 0.01
+        output_dir: "/tmp/result"

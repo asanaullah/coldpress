@@ -1,0 +1,57 @@
+# Assisted by: Gemini 3
+apiVersion: coldpress.io/v1
+kind: WorkloadTemplate
+metadata:
+  name: perftest-server
+  namespace: coldpress-admin
+spec:
+  image: "quay.io/asanaullah/coldpress-perftest-image:latest"
+  annotations:
+    k8s.v1.cni.cncf.io/networks: "{network_name}"
+  command: ["bash", "-c"]
+  args:
+    - |
+      # Raise the soft memlock limit to match the device plugin's hard limit
+      ulimit -S -l $(ulimit -H -l) 2>/dev/null || true
+      echo "Starting RoCE Server..."
+      BIN_PATH=$(find /usr -name ib_write_bw 2>/dev/null | head -n 1)
+      
+      ETH0_IP=$(ip -4 addr show eth0 | grep -w inet | awk '{{print $2}}' | cut -d/ -f1)
+      RDMA_IFACE=$(ip -o link show | grep -v -E 'lo|eth0' | head -n 1 | awk -F': ' '{{print $2}}' | cut -d@ -f1 | tr -d '[:space:]')
+      RDMA_DEV=$(ls /sys/class/net/$RDMA_IFACE/device/infiniband/ 2>/dev/null | head -n 1)
+      ROCE_IP=$(ip -4 addr show $RDMA_IFACE | grep -w inet | awk '{{print $2}}' | cut -d/ -f1)
+      
+      echo "Server Control IP is $ETH0_IP"
+      echo "Server RoCE IP is $ROCE_IP"
+      
+      echo "$ETH0_IP $ROCE_IP" > /mnt/coldpress-data/{job_id}_server_ip.txt
+      
+      (
+        echo "Background ARP trigger waiting for Client IP..."
+        while [ ! -f /mnt/coldpress-data/{job_id}_client_ip.txt ]; do
+          sleep 1
+        done
+        CLIENT_IP=$(cat /mnt/coldpress-data/{job_id}_client_ip.txt | tr -d '[:space:]')
+        echo "Triggering reverse ARP resolution to Client RoCE IP: $CLIENT_IP..."
+        bash -c "echo 'arp' > /dev/udp/$CLIENT_IP/12345" 2>/dev/null || true
+      ) &
+      
+      if [ -z "$BIN_PATH" ]; then exit 1; fi
+      
+      echo "Using SR-IOV interface $RDMA_IFACE mapped to RDMA device $RDMA_DEV"
+      
+      # Start server in an infinite loop so the client can disconnect and reconnect during its size sweeps.
+      # We pass -q 4 (Queue Pairs) and -m 4096 (Max allowed IB Payload MTU).
+      while true; do
+        $BIN_PATH -d $RDMA_DEV -x {gid_index} -p {port} {flags}
+      done
+  blocking:
+    type: "delay"
+    delay: 15
+  resources:
+    limits:
+      "{sriov_resource_name}": "1"
+      memory: "16Gi"
+  ephemeral_mounts: []
+  sys_mounts: []
+  files_to_copy: []
