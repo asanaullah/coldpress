@@ -8,6 +8,8 @@ metadata:
     pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/audit: privileged
     pod-security.kubernetes.io/warn: privileged
+  annotations:
+    coldpress.io/allowed-parsers: "*"
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
