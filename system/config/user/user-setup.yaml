@@ -6,7 +6,7 @@ metadata:
   labels:
     kueue.openshift.io/managed: "true"
   annotations:
-    coldpress.io/allowed-allocator-parsers: "vllm-parser, guidellm-parser, pytorch-ddp-parser, gromacs-parser"
+    coldpress.io/allowed-allocator-parsers: "vllm-parser, guidellm-parser, pytorch-ddp-parser, gromacs-parser, deepti-qwen-parser, ml-dev-env-parser"
     coldpress.io/allowed-compute-parsers: "perftest-server, perftest-client"
 ---
 apiVersion: kueue.x-k8s.io/v1beta2
@@ -26,7 +26,7 @@ metadata:
 spec:
   storageClassName: nfs-csi
   accessModes: [ "ReadWriteMany" ]
-  resources: { requests: { storage: 20Gi } }
+  resources: { requests: { storage: 500Gi } }
 ---
 apiVersion: k8s.cni.cncf.io/v1
 kind: NetworkAttachmentDefinition

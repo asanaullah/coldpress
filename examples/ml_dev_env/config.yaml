@@ -1,0 +1,14 @@
+apiVersion: coldpress.io/v1
+kind: ColdpressResourceAllocator
+metadata:
+  name: interactive-dev-session
+  namespace: researcher-a
+spec:
+  storage:
+    results: researcher-a-storage
+  tasks:
+    - name: "my-ml-workspace"
+      template: "ml-dev-env-parser"
+      params:
+        num_gpus: 4
+        jupyter_token: "my-secure-token"
