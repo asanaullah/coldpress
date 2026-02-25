@@ -1,0 +1,62 @@
+apiVersion: coldpress.io/v1
+kind: WorkloadTemplate
+metadata:
+  name: ml-dev-env-parser
+  namespace: coldpress-admin
+spec:
+  requirements:
+    num_nodes: "1"
+    gpus_per_node: "{num_gpus}"
+    roce_nics_per_node: "0"
+  user_params:
+    - jupyter_token
+  allocator_params:
+    - num_gpus
+  # Using the pre-built ML Dev Env image 
+  image: "quay.io/jschless/ml-dev-env:pytorch-2.9-numpy2"
+  env:
+    - name: "HOME"
+      value: "/mnt/coldpress-data"
+    - name: "NVIDIA_VISIBLE_DEVICES"
+      value: "all"
+    # Fallback to TCP since Coldpress doesn't natively grant IPC_LOCK 
+    # without modifying operator.py to support 'privileged: true' on Workloads
+    - name: "NCCL_IB_DISABLE"
+      value: "1" 
+    - name: "NCCL_P2P_LEVEL"
+      value: "NVL"
+  command: ["bash", "-c"]
+  args:
+    - |
+      set -e
+      echo "=========================================="
+      echo "Starting ML Dev Environment in Coldpress"
+      echo "=========================================="
+      
+      # Change into the persistent coldpress PVC
+      cd /mnt/coldpress-data
+      mkdir -p workspace datasets tensorboard_logs
+      
+      # 1. Start VSCode (code-server)
+      code-server --bind-addr 0.0.0.0:8080 --auth none /mnt/coldpress-data/workspace &
+      
+      # 2. Start Jupyter Notebook
+      jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='{jupyter_token}' --notebook-dir=/mnt/coldpress-data &
+      
+      # 3. Start TensorBoard
+      tensorboard --logdir=/mnt/coldpress-data/tensorboard_logs --bind_all --port=6006 &
+      
+      echo "Services started. Sleeping indefinitely..."
+      sleep infinity
+      
+  # This tells Coldpress to mark the job as "Ready" once VSCode is up on 8080.
+  # Because the script runs 'sleep infinity', the job never terminates.
+  blocking:
+    type: "endpoint"
+    address: "http://127.0.0.1:8080/"
+  resources:
+    limits:
+      nvidia.com/gpu: "{num_gpus}"
+  ephemeral_mounts: []
+  sys_mounts: []
+  files_to_copy: []

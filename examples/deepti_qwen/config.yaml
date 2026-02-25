@@ -1,0 +1,16 @@
+apiVersion: coldpress.io/v1
+kind: ColdpressResourceAllocator
+metadata:
+  name: deepti-qwen-test
+  namespace: researcher-a
+spec:
+  storage:
+    results: researcher-a-storage
+  tasks:
+    - name: "qwen-inference-task"
+      template: "deepti-qwen-parser"
+      params:
+        num_gpus: 4
+        model_name: "Qwen/Qwen2.5-Omni-7B"
+        prompt: "What do you see in this video?"
+        max_new_tokens: 64
