@@ -9,7 +9,7 @@ metadata:
     coldpress.io/allowed-allocator-parsers: "vllm-parser, guidellm-parser, pytorch-ddp-parser, gromacs-parser, deepti-qwen-parser, ml-dev-env-parser"
     coldpress.io/allowed-compute-parsers: "perftest-server, perftest-client"
 ---
-apiVersion: kueue.x-k8s.io/v1beta2
+apiVersion: kueue.x-k8s.io/v1beta1
 kind: LocalQueue
 metadata:
   namespace: researcher-a
