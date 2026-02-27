@@ -317,7 +317,7 @@ def get_node_demand_score(node_id, req_gpus, req_nics):
     try:
         cq = custom_api.get_cluster_custom_object(
             group="kueue.x-k8s.io", 
-            version="v1beta2", 
+            version="v1beta1", 
             plural="clusterqueues", 
             name="cluster-queue-test"
         ) 
