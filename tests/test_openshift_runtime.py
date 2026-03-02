@@ -5,13 +5,17 @@ from unittest.mock import MagicMock, patch
 # Import the module directly
 from openshift_runtime import runtime
 
-# This fixture automatically runs before every test, 
+
+# This fixture automatically runs before every test,
 # keeping the config functions mocked while the tests execute.
 @pytest.fixture(autouse=True)
 def mock_k8s_config():
-    with patch("kubernetes.config.load_incluster_config"), \
-         patch("kubernetes.config.load_kube_config"):
+    with (
+        patch("kubernetes.config.load_incluster_config"),
+        patch("kubernetes.config.load_kube_config"),
+    ):
         yield
+
 
 class TestOpenshiftRuntime:
     def test_get_queue_name(self):
