@@ -51,7 +51,7 @@ class runtime:
                 if pvc.status.phase == "Bound":
                     print(f"PVC {pvc_name} is Bound.")
                     return True
-            except:
+            except client.exceptions.ApiException:
                 pass
             time.sleep(2)
         return False

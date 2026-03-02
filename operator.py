@@ -136,7 +136,7 @@ def create_discovery(spec, name, namespace, body, **kwargs):
         ns_labels = ns_obj.metadata.labels or {}
         if ns_labels.get("pod-security.kubernetes.io/enforce") == "privileged":
             is_admin = True
-    except:
+    except Exception:
         pass
     storage_pvc = f"{namespace}-storage"
     task_list = []
