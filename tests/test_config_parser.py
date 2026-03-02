@@ -43,16 +43,20 @@ config_tests = [
         "empty config",
         "",
         False,
-        lambda x: x.value.errors()[0]["msg"]
-        == "Input should be a valid dictionary or instance of ConfigFile",
+        lambda x: (
+            x.value.errors()[0]["msg"]
+            == "Input should be a valid dictionary or instance of ConfigFile"
+        ),
     ],
     ["valid config", valid_config, True, None],
     [
         "wrong data type",
         wrong_data_type,
         False,
-        lambda x: x.value.errors()[0]["msg"]
-        == "Input should be a valid integer, unable to parse string as an integer",
+        lambda x: (
+            x.value.errors()[0]["msg"]
+            == "Input should be a valid integer, unable to parse string as an integer"
+        ),
     ],
     [
         "unknown top level field",
@@ -64,8 +68,10 @@ config_tests = [
         "missing required fields",
         missing_required_fields,
         False,
-        lambda x: x.value.errors()[0]["msg"] == "Field required"
-        and x.value.errors()[0]["loc"] == ("tasks",),
+        lambda x: (
+            x.value.errors()[0]["msg"] == "Field required"
+            and x.value.errors()[0]["loc"] == ("tasks",)
+        ),
     ],
 ]
 config_test_ids = [test[0] for test in config_tests]

@@ -8,8 +8,8 @@ with (
     # Import the module to test
     from openshift_runtime import runtime
 
+
 class TestOpenshiftRuntime:
-    
     def test_get_queue_name(self):
         rt = runtime()
         assert rt.get_queue_name("researcher-a") == "local-queue-researcher-a"
@@ -22,9 +22,9 @@ class TestOpenshiftRuntime:
         mock_node.metadata.name = "worker-0"
         mock_node.metadata.labels = {"coldpress.node": "0"}
         mock_node.status.allocatable = {"nvidia.com/gpu": "2"}
-        
+
         rt.v1.list_node.return_value.items = [mock_node]
-        
+
         nodes = rt.get_nodes()
         assert "0" in nodes
         assert nodes["0"]["name"] == "worker-0"
@@ -33,46 +33,36 @@ class TestOpenshiftRuntime:
     @patch("kubernetes.client.CustomObjectsApi")
     def test_status_running(self, mock_custom_api):
         rt = runtime()
-        
+
         # Mock running jobset
         mock_jobset = {
-            "status": {
-                "conditions": [],
-                "replicatedJobsStatus": [{"ready": 0}]
-            }
+            "status": {"conditions": [], "replicatedJobsStatus": [{"ready": 0}]}
         }
         rt.custom_api.get_namespaced_custom_object.return_value = mock_jobset
-        
+
         status = rt.status("test-job", "default")
         assert status["state"] == "Running"
 
     @patch("kubernetes.client.CustomObjectsApi")
     def test_status_completed(self, mock_custom_api):
         rt = runtime()
-        
+
         # Mock completed jobset
         mock_jobset = {
-            "status": {
-                "conditions": [
-                    {"type": "Completed", "status": "True"}
-                ]
-            }
+            "status": {"conditions": [{"type": "Completed", "status": "True"}]}
         }
         rt.custom_api.get_namespaced_custom_object.return_value = mock_jobset
-        
+
         status = rt.status("test-job", "default")
         assert status["state"] == "Completed"
 
     @patch("kubernetes.client.CustomObjectsApi")
     def test_status_suspended(self, mock_custom_api):
         rt = runtime()
-        
+
         # Mock suspended jobset (waiting for Kueue)
-        mock_jobset = {
-            "spec": {"suspend": True},
-            "status": {}
-        }
+        mock_jobset = {"spec": {"suspend": True}, "status": {}}
         rt.custom_api.get_namespaced_custom_object.return_value = mock_jobset
-        
+
         status = rt.status("test-job", "default")
         assert status["state"] == "Pending (Suspended)"
