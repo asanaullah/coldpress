@@ -1,3 +1,4 @@
+# Assisted by: Gemini 3
 # pyright: reportUnusedCallResult=false
 
 from typing import Callable
@@ -8,37 +9,21 @@ import yaml
 import models
 
 valid_config = """
-benchmarks:
-  - name: guidellm
-    launch_node: 0 
-    target_node: 0
-    log: True
-    port: 8000
-    args: 
-      max-seconds: 30
-      rate-type: throughput
-      data: '"prompt_tokens=256,output_tokens=128"'
-
-
-model: 
-  name: 'ibm-granite/granite-3.3-8b-instruct'
-  max_model_len: 10000
-
-model_server:
-  - framework:
-      name: vllm
-      env:
-        VLLM_USE_V1: 1 
-      args:
-        port: 8000
-        gpu-memory-utilization: 0.6
-    hardware:
-      node: 0
-      gpu: 0
-    log: True
+tasks:
+  - name: "inference-server"
+    template: "vllm-parser"
+    node: 0
+    params:
+      num_gpus: 1
+      model: "ibm-granite/granite-3.3-8b-instruct"
+      max_model_len: 10000
+      port: 8000
+      gpu_memory_utilization: 0.6
+storage:
+  results: researcher-a-storage
 """
 
-wrong_data_type = valid_config.replace("launch_node: 0", "launch_node: foo")
+wrong_data_type = valid_config.replace("node: 0", "node: foo")
 
 unknown_top_level_field = (
     valid_config
@@ -48,9 +33,8 @@ unknown_field: "this shouldn't be here"
 )
 
 missing_required_fields = """
-benchmarks:
-model:
-model_server:
+storage:
+  results: researcher-a-storage
 """
 
 
@@ -59,16 +43,20 @@ config_tests = [
         "empty config",
         "",
         False,
-        lambda x: x.value.errors()[0]["msg"]
-        == "Input should be a valid dictionary or instance of ConfigFile",
+        lambda x: (
+            x.value.errors()[0]["msg"]
+            == "Input should be a valid dictionary or instance of ConfigFile"
+        ),
     ],
     ["valid config", valid_config, True, None],
     [
         "wrong data type",
         wrong_data_type,
         False,
-        lambda x: x.value.errors()[0]["msg"]
-        == "Input should be a valid integer, unable to parse string as an integer",
+        lambda x: (
+            x.value.errors()[0]["msg"]
+            == "Input should be a valid integer, unable to parse string as an integer"
+        ),
     ],
     [
         "unknown top level field",
@@ -80,8 +68,10 @@ config_tests = [
         "missing required fields",
         missing_required_fields,
         False,
-        lambda x: x.value.errors()[0]["msg"] == "Input should be a valid list"
-        and x.value.errors()[0]["loc"] == ("benchmarks",),
+        lambda x: (
+            x.value.errors()[0]["msg"] == "Field required"
+            and x.value.errors()[0]["loc"] == ("tasks",)
+        ),
     ],
 ]
 config_test_ids = [test[0] for test in config_tests]
