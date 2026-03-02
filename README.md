@@ -145,7 +145,7 @@ oc apply -f parsers/workload/vllm-parser.yaml
   * `type: endpoint`: The next task waits until an HTTP endpoint is reachable (e.g., wait for vLLM `http://127.0.0.1:{port}/health` before starting the benchmark).
   * `type: delay`: Blindly waits N seconds.
 
-* `ephemeral_mounts`: Dynamically provisions scratch space (e.g., `/tmp/result`) that gets automatically extracted to the user's permanent PVC upon job completion.
+* `ephemeral_mounts`: Specifies the job directory (e.g., `/tmp/result`) to be mounted in order to extract results to the user's permanent PVC upon job completion.
 
 ### DiscoveryTemplates
 
