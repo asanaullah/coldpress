@@ -16,7 +16,7 @@ spec:
     - gpu_memory_utilization
   allocator_params:
     - num_gpus
-  image: "docker.io/vllm/vllm-openai:latest"
+  image: "quay.io/vllm/vllm:latest"
   env:
     - name: "VLLM_USE_V1"
       value: "1"

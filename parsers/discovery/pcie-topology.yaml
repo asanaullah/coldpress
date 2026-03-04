@@ -5,7 +5,7 @@ metadata:
   name: pcie-topology-discovery
   namespace: coldpress-admin
 spec:
-  image: "docker.io/library/fedora:latest"
+  image: "quay.io/fedora/fedora:latest"
   result_dir: "pcie-topology"
   script: |
     echo "Gathering PCIe topology data..."

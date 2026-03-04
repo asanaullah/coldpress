@@ -5,7 +5,7 @@ metadata:
   name: rdma-connectivity-discovery
   namespace: coldpress-admin
 spec:
-  image: "docker.io/library/fedora:latest"
+  image: "quay.io/fedora/fedora:latest"
   result_dir: "rdma-connectivity"
   script: |
     echo "Gathering High-Speed Network and GPU topology..."

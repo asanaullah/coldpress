@@ -165,6 +165,7 @@ cd /tmp/result
         if is_admin:
             run_params["network_mode"] = "host"
             run_params["privileged"] = True
+            run_params["tolerate_all"] = True
         params = {
             "run_params": run_params,
             "node_id": node_id,

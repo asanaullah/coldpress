@@ -5,7 +5,7 @@ metadata:
   name: system-perf-discovery
   namespace: coldpress-admin
 spec:
-  image: "docker.io/library/fedora:latest"
+  image: "quay.io/fedora/fedora:latest"
   result_dir: "system-perf"
   script: |
     echo "Gathering privileged system performance data..."
