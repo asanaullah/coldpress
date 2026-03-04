@@ -3,8 +3,9 @@ apiVersion: coldpress.io/v1
 kind: DiscoveryTemplate
 metadata:
   name: comprehensive-system-discovery
+  namespace: coldpress-admin
 spec:
-  image: "docker.io/library/fedora:latest"
+  image: "quay.io/fedora/fedora:latest"
   result_dir: "comprehensive-report"
   script: |
     echo "Gathering Comprehensive System Metrics..."

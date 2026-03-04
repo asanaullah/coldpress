@@ -5,7 +5,7 @@ metadata:
   name: network-topology-discovery
   namespace: coldpress-admin
 spec:
-  image: "docker.io/library/fedora:latest"
+  image: "quay.io/fedora/fedora:latest"
   result_dir: "network-topology"
   script: |
     echo "Gathering Network topology and RDMA data..."

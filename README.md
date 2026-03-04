@@ -1,3 +1,4 @@
+<!-- Assisted by: Gemini 3 -->
 # <sup>COLDPRESS</sup>
 
 Coldpress is a Kubernetes-native optimization and orchestration framework designed to manage complex HPC-like workloads such as AI.
@@ -59,10 +60,26 @@ The lifecycle of a Coldpress job involves distinct steps crossing the Admin, Use
 ## Requirements
 Before starting, ensure your target nodes are labeled with Coldpress IDs (e.g., `oc label node <node-name> coldpress.node=0`). Also create the coldpress namespace where the operator will be deployed (`oc create namespace coldpress`).
 
-Coldpress uses [Kueue](https://kueue.sigs.k8s.io/) and [JobSet](https://jobset.sigs.k8s.io/)  to manage job quotas and queueing. This guide assumes these have been installed on the cluster. 
+### 1. Install Kueue and JobSet
+Coldpress uses [Kueue](https://kueue.sigs.k8s.io/) and [Job Set](https://jobset.sigs.k8s.io/)  to manage job quotas and queueing. Assuming both operators are available to be installed on the cluster, the steps to install/configure them are given below.
+
+1. Install the Red Hat build of Kueue* (tested with v1.2.0)
+2. Install the Job Set Operator (tested with v1.0.0)
+3. Create a Kueue configuration CR with Job Set integration enabled. 
+```bash
+oc apply -f system/config/cluster/kueue-create.yaml
+```
+4.  Create a JobSetOperator CR 
+```bash
+oc apply -f system/config/cluster/jobset-create.yaml
+```
 
 
-### 1. Apply CRDs
+\* Kueue is an operator that can be manged by Red Hat OpenShift AI (RHOAI). If that is enabled on the cluster, then you do not need to install the Kueue operator again
+
+
+
+### 2. Apply CRDs
 
 Coldpress requires five Custom Resource Definitions (CRDs) to be applied to the cluster: `ComputeJ`, `DiscoveryJ`, `WorkloadTemplate`, `DiscoveryTemplate`, and `ColdpressResourceAllocator`.
 
@@ -71,7 +88,7 @@ oc apply -f system/config/cluster/crds.yaml
 ```
 
 
-### 2. Setup Kueue
+### 3. Setup Kueue
 The next step is to define `ResourceFlavors` (which map to coldpress node labels) and a `ClusterQueue`.  
 
 ```bash
@@ -81,7 +98,7 @@ oc apply -f system/config/cluster/kueue-init.yaml
 * **What this does**: It creates `node0` and `node1` flavors, setting nominal quotas for CPUs, Memory, GPUs, and RoCE NICs. It also creates a global `cluster-queue-test` to manage incoming Coldpress jobs.
 
 
-### 3. Deploy Coldpress Operator
+### 4. Deploy Coldpress Operator
 
 Deploy the Kopf-based Python operator that watches for Coldpress CRDs and translates them into `JobSets`. 
 
@@ -91,7 +108,7 @@ oc apply -f system/config/cluster/deployment.yaml
 
 * **What this does**: Creates a ServiceAccount, ClusterRole bindings with permissions to manage Pods, JobSets, and Kueue resources, and spins up the Operator deployment.
 
-### 4. Setup Admin Namespace
+### 5. Setup Admin Namespace
 
 The Admin namespace holds privileged access and stores the globally available templates.
 
@@ -105,7 +122,7 @@ oc apply -f system/config/admin/admin-setup.yaml
 * Creates a `LocalQueue` to connect to Kueue.
 * Sets up persistent storage (`coldpress-admin-storage`) for system discovery results.
 
-### 5. Setup User Namespace
+### 6. Setup User Namespace
 
 Setup a restricted namespace for researchers/users to submit workloads.
 

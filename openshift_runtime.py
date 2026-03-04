@@ -248,6 +248,9 @@ class runtime:
                     else False,
                     restart_policy="Never",
                     volumes=volumes,
+                    tolerations=[client.V1Toleration(operator="Exists")]
+                    if run_params.get("tolerate_all")
+                    else None,
                     containers=[
                         client.V1Container(
                             name="main",
