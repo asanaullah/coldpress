@@ -1,4 +1,4 @@
-# Assisted by: Gemini 3
+# Assisted by: Gemini 3, Claude Sonnet 4.5
 # pyright: reportUnusedCallResult=false
 
 from typing import Callable
@@ -91,3 +91,64 @@ def test_config_parser(
 
         if callable(check):
             assert check(err)
+
+
+class TestConfigEdgeCases:
+    """Tests for edge cases in config validation."""
+
+    def test_task_params_mixed_types(self):
+        """Verifies params dict accepts str/int/float/bool."""
+        config_yaml = """
+tasks:
+  - name: "test-task"
+    template: "test-parser"
+    node: 0
+    params:
+      model: "gpt-4"
+      port: 8000
+      temperature: 0.7
+      debug: true
+storage:
+  results: test-pvc
+"""
+        parsed = yaml.safe_load(config_yaml)
+        config = models.ConfigFile.model_validate(parsed)
+
+        # Verify mixed types are preserved
+        assert config.tasks[0].params["model"] == "gpt-4"
+        assert config.tasks[0].params["port"] == 8000
+        assert config.tasks[0].params["temperature"] == 0.7
+        assert config.tasks[0].params["debug"] is True
+
+    def test_storage_optional_pvc_namespace(self):
+        """Verifies pvc_namespace defaults correctly."""
+        config_yaml = """
+tasks:
+  - name: "test-task"
+    template: "test-parser"
+    node: 0
+storage:
+  results: test-pvc
+"""
+        parsed = yaml.safe_load(config_yaml)
+        config = models.ConfigFile.model_validate(parsed)
+
+        # pvc_namespace should be None (optional)
+        assert config.storage.pvc_namespace is None
+
+    def test_underscore_to_dash_alias(self):
+        """Verifies YAML pvc-namespace maps to pvc_namespace."""
+        config_yaml = """
+tasks:
+  - name: "test-task"
+    template: "test-parser"
+    node: 0
+storage:
+  results: test-pvc
+  pvc-namespace: "admin"
+"""
+        parsed = yaml.safe_load(config_yaml)
+        config = models.ConfigFile.model_validate(parsed)
+
+        # Dash notation should populate underscore field
+        assert config.storage.pvc_namespace == "admin"
