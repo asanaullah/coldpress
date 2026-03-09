@@ -212,7 +212,9 @@ class TestJobSetCreation:
         # Verify volume and volumeMount
         call_args = mock_api.create_namespaced_custom_object.call_args
         jobset_body = call_args[0][4]
-        pod_spec = jobset_body["spec"]["replicatedJobs"][0]["template"]["spec"]["template"]["spec"]
+        pod_spec = jobset_body["spec"]["replicatedJobs"][0]["template"]["spec"][
+            "template"
+        ]["spec"]
 
         # Check volume
         volumes = pod_spec["volumes"]
@@ -222,7 +224,9 @@ class TestJobSetCreation:
 
         # Check volumeMount
         volume_mounts = pod_spec["containers"][0]["volumeMounts"]
-        data_mount = next((m for m in volume_mounts if m["name"] == "coldpress-data"), None)
+        data_mount = next(
+            (m for m in volume_mounts if m["name"] == "coldpress-data"), None
+        )
         assert data_mount is not None
         assert data_mount["mountPath"] == "/mnt/coldpress-data"
 
@@ -264,9 +268,9 @@ class TestJobSetCreation:
         # Verify ephemeral mount uses subPath
         call_args = mock_api.create_namespaced_custom_object.call_args
         jobset_body = call_args[0][4]
-        volume_mounts = jobset_body["spec"]["replicatedJobs"][0]["template"]["spec"]["template"][
-            "spec"
-        ]["containers"][0]["volumeMounts"]
+        volume_mounts = jobset_body["spec"]["replicatedJobs"][0]["template"]["spec"][
+            "template"
+        ]["spec"]["containers"][0]["volumeMounts"]
 
         # Find the ephemeral mount (after the base coldpress-data mount)
         ephemeral_mount = next(
@@ -313,9 +317,9 @@ class TestJobSetCreation:
         # Verify GPU resource limits
         call_args = mock_api.create_namespaced_custom_object.call_args
         jobset_body = call_args[0][4]
-        resources = jobset_body["spec"]["replicatedJobs"][0]["template"]["spec"]["template"][
-            "spec"
-        ]["containers"][0]["resources"]
+        resources = jobset_body["spec"]["replicatedJobs"][0]["template"]["spec"][
+            "template"
+        ]["spec"]["containers"][0]["resources"]
 
         assert resources["limits"]["nvidia.com/gpu"] == "2"
         assert resources["requests"]["nvidia.com/gpu"] == "2"
@@ -326,7 +330,9 @@ class TestBlockingMechanisms:
 
     @patch("kubernetes.client.CoreV1Api")
     @patch("kubernetes.client.CustomObjectsApi")
-    def test_endpoint_blocking_creates_service(self, mock_custom_api_cls, mock_core_v1_cls):
+    def test_endpoint_blocking_creates_service(
+        self, mock_custom_api_cls, mock_core_v1_cls
+    ):
         """Verifies endpoint blocking creates ClusterIP Service."""
         rt = runtime()
         mock_custom_api = MagicMock()
@@ -344,7 +350,10 @@ class TestBlockingMechanisms:
                         "image": "test:latest",
                         "args": [],
                         "env": [],
-                        "blocking": {"type": "endpoint", "address": "http://127.0.0.1:8000/health"},
+                        "blocking": {
+                            "type": "endpoint",
+                            "address": "http://127.0.0.1:8000/health",
+                        },
                         "annotations": {},
                         "resources": {"limits": {"nvidia.com/gpu": "0"}},
                         "ephemeral_mounts": [],
@@ -387,7 +396,10 @@ class TestBlockingMechanisms:
                         "image": "test:latest",
                         "args": [],
                         "env": [],
-                        "blocking": {"type": "endpoint", "address": "http://127.0.0.1:8000/health"},
+                        "blocking": {
+                            "type": "endpoint",
+                            "address": "http://127.0.0.1:8000/health",
+                        },
                         "annotations": {},
                         "resources": {"limits": {"nvidia.com/gpu": "0"}},
                         "ephemeral_mounts": [],
@@ -408,9 +420,9 @@ class TestBlockingMechanisms:
         # Verify readinessProbe was added
         call_args = mock_api.create_namespaced_custom_object.call_args
         jobset_body = call_args[0][4]
-        container = jobset_body["spec"]["replicatedJobs"][0]["template"]["spec"]["template"][
-            "spec"
-        ]["containers"][0]
+        container = jobset_body["spec"]["replicatedJobs"][0]["template"]["spec"][
+            "template"
+        ]["spec"]["containers"][0]
 
         assert container["readinessProbe"] is not None
         assert container["readinessProbe"]["httpGet"]["path"] == "/health"
@@ -454,7 +466,9 @@ class TestBlockingMechanisms:
         # Verify init container with sleep
         call_args = mock_api.create_namespaced_custom_object.call_args
         jobset_body = call_args[0][4]
-        pod_spec = jobset_body["spec"]["replicatedJobs"][0]["template"]["spec"]["template"]["spec"]
+        pod_spec = jobset_body["spec"]["replicatedJobs"][0]["template"]["spec"][
+            "template"
+        ]["spec"]
 
         assert len(pod_spec["initContainers"]) == 1
         assert pod_spec["initContainers"][0]["name"] == "delay"
@@ -501,7 +515,10 @@ class TestBlockingMechanisms:
                         "image": "test:latest",
                         "args": [],
                         "env": [],
-                        "blocking": {"type": "endpoint", "address": "http://127.0.0.1:8000"},
+                        "blocking": {
+                            "type": "endpoint",
+                            "address": "http://127.0.0.1:8000",
+                        },
                         "annotations": {},
                         "resources": {"limits": {"nvidia.com/gpu": "0"}},
                         "ephemeral_mounts": [],
@@ -559,8 +576,8 @@ class TestEdgeCases:
         # Simulate 404 error
         from kubernetes import client as k8s_client
 
-        mock_api.get_namespaced_custom_object.side_effect = k8s_client.exceptions.ApiException(
-            status=404
+        mock_api.get_namespaced_custom_object.side_effect = (
+            k8s_client.exceptions.ApiException(status=404)
         )
 
         status = rt.status("missing-job", "default")
@@ -568,7 +585,9 @@ class TestEdgeCases:
 
     @patch("kubernetes.client.CoreV1Api")
     @patch("kubernetes.client.CustomObjectsApi")
-    def test_delete_handles_missing_resources(self, mock_custom_api_cls, mock_core_v1_cls):
+    def test_delete_handles_missing_resources(
+        self, mock_custom_api_cls, mock_core_v1_cls
+    ):
         """Verifies delete doesn't crash on missing JobSet/Services."""
         rt = runtime()
         mock_custom_api = MagicMock()

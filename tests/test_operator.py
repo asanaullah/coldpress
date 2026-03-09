@@ -3,6 +3,7 @@
 Test suite for operator.py - covers security boundaries, node allocation,
 and template rendering logic.
 """
+
 import pytest
 from unittest.mock import MagicMock, patch
 import kopf
@@ -111,12 +112,19 @@ class TestParserAllowlistEnforcement:
         mock_core_api.read_namespace.return_value = mock_namespace
 
         # Mock nodes
-        mock_rt.get_nodes.return_value = {"0": {"name": "worker-0", "gpus": {"0": False}}}
+        mock_rt.get_nodes.return_value = {
+            "0": {"name": "worker-0", "gpus": {"0": False}}
+        }
 
         # Test with unauthorized parser
         spec = {
             "tasks": [
-                {"name": "task1", "template": "unauthorized-parser", "node": 0, "params": {}}
+                {
+                    "name": "task1",
+                    "template": "unauthorized-parser",
+                    "node": 0,
+                    "params": {},
+                }
             ],
             "storage": {"results": "test-pvc"},
         }
@@ -179,7 +187,9 @@ class TestParserAllowlistEnforcement:
         mock_core_api.read_namespace.return_value = mock_namespace
 
         # Mock nodes and template
-        mock_rt.get_nodes.return_value = {"0": {"name": "worker-0", "gpus": {"0": False}}}
+        mock_rt.get_nodes.return_value = {
+            "0": {"name": "worker-0", "gpus": {"0": False}}
+        }
         mock_custom_api.get_namespaced_custom_object.return_value = {
             "spec": {
                 "image": "test:latest",
@@ -190,7 +200,12 @@ class TestParserAllowlistEnforcement:
 
         spec = {
             "tasks": [
-                {"name": "task1", "template": "any-parser-should-work", "node": 0, "params": {}}
+                {
+                    "name": "task1",
+                    "template": "any-parser-should-work",
+                    "node": 0,
+                    "params": {},
+                }
             ],
             "storage": {"results": "test-pvc"},
         }
@@ -237,7 +252,10 @@ class TestNodeAllocation:
         # Mock nodes: node0 has 1 GPU, node1 has 4 GPUs
         mock_rt.get_nodes.return_value = {
             "0": {"name": "worker-0", "gpus": {"0": False}},
-            "1": {"name": "worker-1", "gpus": {"0": False, "1": False, "2": False, "3": False}},
+            "1": {
+                "name": "worker-1",
+                "gpus": {"0": False, "1": False, "2": False, "3": False},
+            },
         }
 
         with patch("coldpress_operator.get_node_demand_score", return_value=0):
@@ -322,7 +340,11 @@ class TestTemplateRendering:
             "spec": {
                 "image": "vllm:latest",
                 "command": ["python", "-m", "vllm.entrypoints.api_server"],
-                "args": ["--model={model}", "--port={port}", "--tensor-parallel-size={num_gpus}"],
+                "args": [
+                    "--model={model}",
+                    "--port={port}",
+                    "--tensor-parallel-size={num_gpus}",
+                ],
                 "env": [
                     {"name": "MODEL_NAME", "value": "{model}"},
                     {"name": "PORT", "value": "{port}"},
@@ -336,7 +358,11 @@ class TestTemplateRendering:
         result = render_template("vllm-parser", "researcher-a", user_params)
 
         # Verify interpolation
-        assert result["args"] == ["--model=llama-3", "--port=8080", "--tensor-parallel-size=4"]
+        assert result["args"] == [
+            "--model=llama-3",
+            "--port=8080",
+            "--tensor-parallel-size=4",
+        ]
         assert result["env"][0]["value"] == "llama-3"
         assert result["env"][1]["value"] == "8080"
         assert result["resources"]["limits"]["nvidia.com/gpu"] == "4"
@@ -349,7 +375,10 @@ class TestServiceDiscovery:
         """Verifies get_node_ip() generates correct service DNS."""
         node_task_map = {"0": 0, "1": 1}
         result = get_node_ip(
-            target_node=0, namespace="researcher-a", job_id="test-job", node_task_map=node_task_map
+            target_node=0,
+            namespace="researcher-a",
+            job_id="test-job",
+            node_task_map=node_task_map,
         )
         assert result == "s-test-job-0.researcher-a.svc"
 
@@ -358,6 +387,9 @@ class TestServiceDiscovery:
         node_task_map = {"0": 0, "1": 1}
         # Request node 99 which doesn't exist
         result = get_node_ip(
-            target_node=99, namespace="researcher-a", job_id="test-job", node_task_map=node_task_map
+            target_node=99,
+            namespace="researcher-a",
+            job_id="test-job",
+            node_task_map=node_task_map,
         )
         assert result == "127.0.0.1"
