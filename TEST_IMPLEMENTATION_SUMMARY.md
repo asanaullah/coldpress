@@ -110,15 +110,21 @@ def mock_k8s_config():
 ### Challenge 1: operator.py Naming Conflict
 **Problem**: `operator.py` conflicts with Python's built-in `operator` module, causing import errors.
 
-**Solution**: Used `importlib.util.spec_from_file_location()` to explicitly load the module:
+**Solution**: Created `tests/conftest.py` that loads the module before pytest collection using `pytest_configure` hook:
 
 ```python
-operator_path = Path(__file__).parent.parent / "operator.py"
-spec = importlib.util.spec_from_file_location("coldpress_operator", operator_path)
-operator_module = importlib.util.module_from_spec(spec)
-sys.modules["coldpress_operator"] = operator_module
-spec.loader.exec_module(operator_module)
+def pytest_configure(config):
+    """Load operator module before test collection with mocked K8s config"""
+    with patch("kubernetes.config.load_incluster_config"), \
+         patch("kubernetes.config.load_kube_config"):
+        operator_path = Path(__file__).parent.parent / "operator.py"
+        spec = importlib.util.spec_from_file_location("coldpress_operator", operator_path)
+        operator_module = importlib.util.module_from_spec(spec)
+        sys.modules["coldpress_operator"] = operator_module
+        spec.loader.exec_module(operator_module)
 ```
+
+This prevents the module-level `rt = runtime()` in operator.py from attempting Kubernetes connections during test collection.
 
 ### Challenge 2: Call Arguments Access
 **Problem**: Initial tests failed with `KeyError: 'body'` when accessing mock call arguments.

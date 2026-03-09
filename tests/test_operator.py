@@ -8,17 +8,10 @@ import pytest
 from unittest.mock import MagicMock, patch
 import kopf
 import sys
-from pathlib import Path
-import importlib.util
 
-# Load our local operator.py module explicitly (avoiding stdlib operator conflict)
-operator_path = Path(__file__).parent.parent / "operator.py"
-spec = importlib.util.spec_from_file_location("coldpress_operator", operator_path)
-operator_module = importlib.util.module_from_spec(spec)
-sys.modules["coldpress_operator"] = operator_module
-spec.loader.exec_module(operator_module)
-
-# Extract functions we need to test
+# Import from the pre-loaded coldpress_operator module (loaded in conftest.py)
+# This avoids stdlib operator conflict and K8s connection issues
+operator_module = sys.modules["coldpress_operator"]
 render_template = operator_module.render_template
 get_node_ip = operator_module.get_node_ip
 allocate_node = operator_module.allocate_node
