@@ -4,3 +4,5 @@ pydantic
 pre-commit
 ruff
 pytest
+kopf
+pytest-cov
