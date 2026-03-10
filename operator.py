@@ -75,6 +75,7 @@ def render_template(
         "sys_mounts": [
             {k: fmt(v) for k, v in m.items()} for m in spec.get("sys_mounts", [])
         ],
+        "tolerate_all": spec.get("tolerate_all", False),
         "log": True,
     }
     if run_params["blocking"].get("address"):
