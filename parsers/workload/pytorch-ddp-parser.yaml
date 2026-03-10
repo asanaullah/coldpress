@@ -165,6 +165,7 @@ spec:
   resources:
     limits:
       nvidia.com/gpu: "{num_gpus}"
+  tolerate_all: true
   ephemeral_mounts:
     - target: "{output_dir}"
       size: "500Mi"
