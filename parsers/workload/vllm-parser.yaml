@@ -36,6 +36,7 @@ spec:
   resources:
     limits:
       nvidia.com/gpu: "{num_gpus}"
+  tolerate_all: true
   ephemeral_mounts: []
   sys_mounts: []
   files_to_copy: []

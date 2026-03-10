@@ -59,6 +59,7 @@ spec:
     limits:
       "{sriov_resource_name}": "1"
       memory: "16Gi"
+  tolerate_all: true
   ephemeral_mounts:
     - target: "/tmp/result"
       size: "100Mi"

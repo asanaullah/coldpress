@@ -1,4 +1,4 @@
-# Assisted by: Gemini 3
+# Assisted by: Gemini 3, Claude Sonnet 4.5
 import kopf
 import math
 import logging
@@ -404,7 +404,7 @@ def allocate_node(req_gpus, req_nics):
 
 
 @kopf.on.create("coldpress.io", "v1", "coldpressresourceallocators")
-def handle_allocator(spec, name, namespace, **kwargs):
+def handle_allocator(spec, name, namespace, body, **kwargs):
     logging.info(f"Allocating resources for {name}...")
     core_api = client.CoreV1Api()
     try:
@@ -472,7 +472,7 @@ def handle_allocator(spec, name, namespace, **kwargs):
                     "apiVersion": "coldpress.io/v1",
                     "kind": "ColdpressResourceAllocator",
                     "name": name,
-                    "uid": kwargs["body"]["metadata"]["uid"],
+                    "uid": body["metadata"]["uid"],
                     "controller": True,
                 }
             ],
