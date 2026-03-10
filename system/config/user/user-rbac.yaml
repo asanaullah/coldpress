@@ -1,0 +1,43 @@
+# User RBAC for Coldpress Resources
+# Apply this to each user's namespace (e.g., researcher-a, researcher-b)
+# This provides strong isolation - each user only has access to their own namespace
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: coldpress-user-role
+  namespace: researcher-a
+rules:
+  # Allow users to manage ColdpressResourceAllocators
+  - apiGroups: ["coldpress.io"]
+    resources: ["coldpressresourceallocators"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  # Allow users to manage ComputeJ resources
+  - apiGroups: ["coldpress.io"]
+    resources: ["compute-jobs"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  # Allow users to view their JobSets
+  - apiGroups: ["jobset.x-k8s.io"]
+    resources: ["jobsets"]
+    verbs: ["get", "list", "watch"]
+  # Allow users to view their Jobs and Pods
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: coldpress-user-binding
+  namespace: researcher-a
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: coldpress-user-role
+subjects:
+  - kind: User
+    name: asanaullah
+    apiGroup: rbac.authorization.k8s.io
