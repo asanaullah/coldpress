@@ -349,9 +349,63 @@ def monitor_status(name, namespace, body, **kwargs):
     return status_info
 
 
+def get_actual_node_gpu_usage(node_name):
+    """
+    Get actual GPU usage on a node by summing up GPU requests from all running pods.
+    This catches GPU workloads that might be running outside of kueue's tracking.
+    """
+    try:
+        core_api = client.CoreV1Api()
+        pods = core_api.list_pod_for_all_namespaces(
+            field_selector=f"spec.nodeName={node_name},status.phase=Running"
+        )
+
+        total_gpus_used = 0
+        for pod in pods.items:
+            for container in pod.spec.containers:
+                if container.resources and container.resources.requests:
+                    gpu_request = container.resources.requests.get(
+                        "nvidia.com/gpu", "0"
+                    )
+                    try:
+                        total_gpus_used += float(gpu_request)
+                    except ValueError:
+                        pass
+
+                # Also check limits in case requests aren't set
+                if container.resources and container.resources.limits:
+                    gpu_limit = container.resources.limits.get("nvidia.com/gpu", "0")
+                    try:
+                        # Use max of request and limit for this container
+                        gpu_val = float(gpu_limit)
+                        if gpu_val > 0 and (
+                            not container.resources.requests
+                            or not container.resources.requests.get("nvidia.com/gpu")
+                        ):
+                            total_gpus_used += gpu_val
+                    except ValueError:
+                        pass
+
+        return total_gpus_used
+    except Exception as e:
+        logging.warning(f"Could not fetch actual GPU usage for node {node_name}: {e}")
+        return 0
+
+
 def get_node_demand_score(node_id, req_gpus, req_nics):
     custom_api = client.CustomObjectsApi()
     score = 0
+
+    # Get the node name for actual usage check
+    nodes = rt.get_nodes()
+    node_info = nodes.get(str(node_id), {})
+    node_name = node_info.get("name", "unknown")
+
+    # Get actual GPU usage from pods running on the node
+    actual_gpu_usage = (
+        get_actual_node_gpu_usage(node_name) if node_name != "unknown" else 0
+    )
+
     try:
         cq = custom_api.get_cluster_custom_object(
             group="kueue.x-k8s.io",
@@ -368,7 +422,17 @@ def get_node_demand_score(node_id, req_gpus, req_nics):
                     total_str = str(res.get("total", "0"))
                     try:
                         if res_name == "nvidia.com/gpu":
-                            score += (float(total_str) / max(req_gpus, 1)) * 10
+                            kueue_gpu_usage = float(total_str)
+                            # Use maximum of actual vs kueue tracked usage
+                            # This ensures we account for workloads outside kueue's view
+                            effective_gpu_usage = max(kueue_gpu_usage, actual_gpu_usage)
+                            score += (effective_gpu_usage / max(req_gpus, 1)) * 10
+                            if effective_gpu_usage != kueue_gpu_usage:
+                                logging.info(
+                                    f"Node {node_id}: Actual GPU usage ({actual_gpu_usage}) "
+                                    f"differs from Kueue tracking ({kueue_gpu_usage}). "
+                                    f"Using max: {effective_gpu_usage}"
+                                )
                         elif "rdma" in res_name:
                             score += (float(total_str) / max(req_nics, 1)) * 5
                         elif res_name == "cpu":
@@ -382,7 +446,10 @@ def get_node_demand_score(node_id, req_gpus, req_nics):
         return score
     except Exception as e:
         logging.warning(f"Could not fetch Kueue queue status for scoring: {e}")
-        return 0
+        # If kueue query fails, still use actual usage if available
+        if actual_gpu_usage > 0:
+            score = (actual_gpu_usage / max(req_gpus, 1)) * 10
+        return score
 
 
 def allocate_node(req_gpus, req_nics):
