@@ -271,11 +271,25 @@ class TestNodeAllocation:
 
         assert "No nodes found satisfying requirements" in str(exc_info.value)
 
+    @patch("kubernetes.client.CoreV1Api")
     @patch("kubernetes.client.CustomObjectsApi")
-    def test_get_node_demand_score_calculation(self, mock_custom_api_cls):
+    @patch("coldpress_operator.rt")
+    def test_get_node_demand_score_calculation(
+        self, mock_rt, mock_custom_api_cls, mock_core_api_cls
+    ):
         """Verifies scoring algorithm weighs GPU/NIC/CPU usage correctly."""
         mock_api = MagicMock()
         mock_custom_api_cls.return_value = mock_api
+
+        # Mock rt.get_nodes() to return node info
+        mock_rt.get_nodes.return_value = {
+            "0": {"name": "worker-0", "gpus": {"0": False, "1": False}}
+        }
+
+        # Mock CoreV1Api to return empty pod list (no actual GPU usage)
+        mock_core_api = MagicMock()
+        mock_core_api_cls.return_value = mock_core_api
+        mock_core_api.list_pod_for_all_namespaces.return_value = MagicMock(items=[])
 
         # Mock Kueue ClusterQueue status with resource usage
         mock_cq = {

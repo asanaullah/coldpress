@@ -364,7 +364,9 @@ def get_actual_node_gpu_usage(node_name):
         for pod in pods.items:
             for container in pod.spec.containers:
                 if container.resources and container.resources.requests:
-                    gpu_request = container.resources.requests.get("nvidia.com/gpu", "0")
+                    gpu_request = container.resources.requests.get(
+                        "nvidia.com/gpu", "0"
+                    )
                     try:
                         total_gpus_used += float(gpu_request)
                     except ValueError:
@@ -376,8 +378,10 @@ def get_actual_node_gpu_usage(node_name):
                     try:
                         # Use max of request and limit for this container
                         gpu_val = float(gpu_limit)
-                        if gpu_val > 0 and (not container.resources.requests or
-                                          not container.resources.requests.get("nvidia.com/gpu")):
+                        if gpu_val > 0 and (
+                            not container.resources.requests
+                            or not container.resources.requests.get("nvidia.com/gpu")
+                        ):
                             total_gpus_used += gpu_val
                     except ValueError:
                         pass
@@ -398,7 +402,9 @@ def get_node_demand_score(node_id, req_gpus, req_nics):
     node_name = node_info.get("name", "unknown")
 
     # Get actual GPU usage from pods running on the node
-    actual_gpu_usage = get_actual_node_gpu_usage(node_name) if node_name != "unknown" else 0
+    actual_gpu_usage = (
+        get_actual_node_gpu_usage(node_name) if node_name != "unknown" else 0
+    )
 
     try:
         cq = custom_api.get_cluster_custom_object(
