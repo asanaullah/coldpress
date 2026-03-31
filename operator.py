@@ -185,6 +185,20 @@ cd /tmp/result
         )
     try:
         rt.run(job_id, task_list, namespace, storage_pvc)
+
+        # Save intent provenance
+        intent_data = {
+            "job_type": "discovery",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "storage_pvc": storage_pvc,
+            "template_name": template_name,
+            "group_folder": group_folder,
+            "result_dir": result_dir,
+            "task_list": task_list,
+            "script": script
+        }
+        save_intent_provenance(namespace, job_id, storage_pvc, intent_data)
+
         return {"status": "JobSubmitted", "job_id": job_id, "tasks": len(task_list)}
     except Exception as e:
         raise kopf.PermanentError(f"Failed to launch discovery: {e}")
@@ -266,10 +280,65 @@ def create_compute_job(spec, name, namespace, body, **kwargs):
             {"label": f"Task {i}: {task.name}", "params": params, "task_id": i}
         )
     try:
-        rt.run(job_id, task_list, namespace, config.storage.results)
+        storage_pvc = config.storage.results
+        rt.run(job_id, task_list, namespace, storage_pvc)
+
+        # Save intent provenance
+        intent_data = {
+            "job_type": "compute",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "storage_pvc": storage_pvc,
+            "model_pvc": config.storage.models,
+            "base_dir": base_dir,
+            "task_list": task_list,
+            "is_allocated": is_allocated
+        }
+        save_intent_provenance(namespace, job_id, storage_pvc, intent_data)
+
         return {"job_id": job_id, "tasks": len(task_list)}
     except Exception as e:
         raise kopf.PermanentError(f"Failed to launch job: {e}")
+
+
+def save_intent_provenance(namespace, job_name, storage_pvc, intent_data):
+    """Save intent provenance immediately after job creation"""
+    try:
+        core_api = client.CoreV1Api()
+        intent_yaml = yaml.dump(intent_data, default_flow_style=False)
+        intent_yaml_escaped = intent_yaml.replace("'", "'\\''")
+        intent_path = f"/data/coldpress_provenance/intent/{job_name}.yaml"
+
+        write_pod = client.V1Pod(
+            metadata=client.V1ObjectMeta(
+                name=f"intent-writer-{job_name}"[:63],
+                namespace=namespace
+            ),
+            spec=client.V1PodSpec(
+                restart_policy="Never",
+                containers=[
+                    client.V1Container(
+                        name="writer",
+                        image="registry.access.redhat.com/ubi9/ubi-minimal:latest",
+                        command=["sh", "-c", f"mkdir -p /data/coldpress_provenance/intent && cat > {intent_path} << 'EOF'\n{intent_yaml_escaped}\nEOF"],
+                        volume_mounts=[
+                            client.V1VolumeMount(name="results", mount_path="/data")
+                        ]
+                    )
+                ],
+                volumes=[
+                    client.V1Volume(
+                        name="results",
+                        persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                            claim_name=storage_pvc
+                        )
+                    )
+                ]
+            )
+        )
+        core_api.create_namespaced_pod(namespace, write_pod)
+        logging.info(f"Intent provenance saved to {storage_pvc}/{intent_path}")
+    except Exception as e:
+        logging.warning(f"Failed to save intent provenance for {job_name}: {e}")
 
 
 def dump_provenance_to_pvc(namespace, job_name, compute_job_body, allocator_name=None):
@@ -278,8 +347,86 @@ def dump_provenance_to_pvc(namespace, job_name, compute_job_body, allocator_name
         api = client.CustomObjectsApi()
         core_api = client.CoreV1Api()
 
-        # Get the ColdpressResourceAllocator if we have the name
+        # Load intent provenance saved at creation time
+        intent_data = None
+        storage_pvc = None
+        base_dir = None
+        intent_path = f"coldpress_provenance/intent/{job_name}.yaml"
+
+        # Try to read intent provenance from common PVC locations
+        for pvc_name in [f"{namespace}-storage", "coldpress-model-storage"]:
+            try:
+                # Create a reader pod to fetch intent provenance
+                import uuid
+                reader_name = f"intent-reader-{uuid.uuid4().hex[:8]}"
+                read_pod = client.V1Pod(
+                    metadata=client.V1ObjectMeta(name=reader_name, namespace=namespace),
+                    spec=client.V1PodSpec(
+                        restart_policy="Never",
+                        containers=[
+                            client.V1Container(
+                                name="reader",
+                                image="registry.access.redhat.com/ubi9/ubi-minimal:latest",
+                                command=["sh", "-c", f"cat /data/{intent_path} 2>/dev/null || echo 'NOT_FOUND'"],
+                                volume_mounts=[client.V1VolumeMount(name="results", mount_path="/data")]
+                            )
+                        ],
+                        volumes=[
+                            client.V1Volume(
+                                name="results",
+                                persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=pvc_name)
+                            )
+                        ]
+                    )
+                )
+                core_api.create_namespaced_pod(namespace, read_pod)
+
+                # Wait for pod to complete
+                import time
+                for _ in range(30):
+                    pod_status = core_api.read_namespaced_pod(reader_name, namespace)
+                    if pod_status.status.phase in ["Succeeded", "Failed"]:
+                        # Read logs
+                        logs = core_api.read_namespaced_pod_log(reader_name, namespace)
+                        if logs and logs != "NOT_FOUND":
+                            intent_data = yaml.safe_load(logs)
+                            storage_pvc = intent_data.get("storage_pvc", pvc_name)
+                            base_dir = intent_data.get("base_dir")
+                            logging.info(f"Loaded intent provenance from {pvc_name}/{intent_path}")
+                        # Cleanup reader pod
+                        try:
+                            core_api.delete_namespaced_pod(reader_name, namespace)
+                        except:
+                            pass
+                        break
+                    time.sleep(1)
+
+                if intent_data:
+                    break
+            except Exception as e:
+                logging.debug(f"Could not read intent from {pvc_name}: {e}")
+                continue
+
+        # Fallback if intent provenance not found
+        if not storage_pvc:
+            storage_pvc = f"{namespace}-storage"
+            logging.warning(f"Intent provenance not found, using fallback PVC: {storage_pvc}")
+
+        if not base_dir:
+            # Try to reconstruct (old behavior)
+            creation_time = compute_job_body.get("metadata", {}).get("creationTimestamp")
+            if creation_time:
+                try:
+                    dt = datetime.fromisoformat(creation_time.replace('Z', '+00:00'))
+                    timestamp_str = dt.strftime('%Y%m%d_%H%M%S')
+                    base_dir = f"coldpress_results/{job_name}_{timestamp_str}"
+                    logging.warning(f"Reconstructed base_dir from timestamp: {base_dir}")
+                except Exception as e:
+                    logging.warning(f"Could not parse creation timestamp: {e}")
+
+        # Get the ColdpressResourceAllocator and its intent if we have the name
         allocator_data = None
+        allocator_intent = None
         if allocator_name:
             try:
                 allocator_data = api.get_namespaced_custom_object(
@@ -292,18 +439,47 @@ def dump_provenance_to_pvc(namespace, job_name, compute_job_body, allocator_name
             except Exception as e:
                 logging.warning(f"Could not retrieve allocator {allocator_name}: {e}")
 
-        # Reconstruct base_dir from compute job metadata
-        # base_dir format: coldpress_results/{name}_{timestamp}
-        creation_time = compute_job_body.get("metadata", {}).get("creationTimestamp")
-        base_dir = None
-        if creation_time:
+            # Try to load allocator intent provenance
+            allocator_intent_path = f"coldpress_provenance/intent/{allocator_name}.yaml"
             try:
-                from datetime import datetime
-                dt = datetime.fromisoformat(creation_time.replace('Z', '+00:00'))
-                timestamp_str = dt.strftime('%Y%m%d_%H%M%S')
-                base_dir = f"coldpress_results/{job_name}_{timestamp_str}"
+                import uuid
+                reader_name = f"aint-reader-{uuid.uuid4().hex[:8]}"
+                read_pod = client.V1Pod(
+                    metadata=client.V1ObjectMeta(name=reader_name, namespace=namespace),
+                    spec=client.V1PodSpec(
+                        restart_policy="Never",
+                        containers=[
+                            client.V1Container(
+                                name="reader",
+                                image="registry.access.redhat.com/ubi9/ubi-minimal:latest",
+                                command=["sh", "-c", f"cat /data/{allocator_intent_path} 2>/dev/null || echo 'NOT_FOUND'"],
+                                volume_mounts=[client.V1VolumeMount(name="results", mount_path="/data")]
+                            )
+                        ],
+                        volumes=[
+                            client.V1Volume(
+                                name="results",
+                                persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=storage_pvc)
+                            )
+                        ]
+                    )
+                )
+                core_api.create_namespaced_pod(namespace, read_pod)
+                import time
+                for _ in range(30):
+                    pod_status = core_api.read_namespaced_pod(reader_name, namespace)
+                    if pod_status.status.phase in ["Succeeded", "Failed"]:
+                        logs = core_api.read_namespaced_pod_log(reader_name, namespace)
+                        if logs and logs != "NOT_FOUND":
+                            allocator_intent = yaml.safe_load(logs)
+                        try:
+                            core_api.delete_namespaced_pod(reader_name, namespace)
+                        except:
+                            pass
+                        break
+                    time.sleep(1)
             except Exception as e:
-                logging.warning(f"Could not parse creation timestamp: {e}")
+                logging.debug(f"Could not read allocator intent: {e}")
 
         # Get the JobSet (contains actual rendered pod specs)
         jobset_name = f"cpj-{job_name}"
@@ -388,24 +564,25 @@ def dump_provenance_to_pvc(namespace, job_name, compute_job_body, allocator_name
         except Exception as e:
             logging.warning(f"Could not retrieve node info: {e}")
 
-        # Create provenance record
+        # Create provenance record (intent + execution)
         provenance = {
             "job_name": job_name,
             "namespace": namespace,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "compute_job": compute_job_body,
-            "resource_allocator": allocator_data,
-            "templates": templates_data,
-            "jobset": jobset_data,
-            "nodes": nodes_data,
-            "pods": pods_data
+            "intent": intent_data,  # What we planned to run
+            "allocator_intent": allocator_intent,  # Allocation decisions if from allocator
+            "execution": {  # What actually ran
+                "compute_job": compute_job_body,
+                "resource_allocator": allocator_data,
+                "templates": templates_data,
+                "jobset": jobset_data,
+                "nodes": nodes_data,
+                "pods": pods_data
+            }
         }
 
         # Write to PVC via a temporary pod
         provenance_yaml = yaml.dump(provenance, default_flow_style=False)
-
-        # Find the results PVC
-        storage_pvc = f"{namespace}-storage"
 
         # Escape single quotes in YAML for shell heredoc
         provenance_yaml_escaped = provenance_yaml.replace("'", "'\\''")
@@ -715,6 +892,7 @@ def handle_allocator(spec, name, namespace, body, **kwargs):
     api = client.CustomObjectsApi()
     tasks = spec.get("tasks", [])
     allocated_tasks = []
+    allocation_decisions = []  # Track allocation reasoning
     for idx, task in enumerate(tasks):
         template_name = task.get("template")
         if (
@@ -740,10 +918,28 @@ def handle_allocator(spec, name, namespace, body, **kwargs):
         req_nics_str = requirements.get("roce_nics_per_node", "0").format(**user_params)
         req_gpus = int(req_gpus_str) if req_gpus_str.isdigit() else 0
         req_nics = int(req_nics_str) if req_nics_str.isdigit() else 0
+
+        # Calculate scores for all nodes before allocation
+        nodes = rt.get_nodes()
+        node_scores = {}
+        for node_id in nodes.keys():
+            total_gpus = len(nodes[node_id].get("gpus", {}))
+            if total_gpus >= req_gpus:
+                node_scores[node_id] = get_node_demand_score(node_id, req_gpus, req_nics)
+
         chosen_node = allocate_node(req_gpus, req_nics)
         logging.info(
             f"Task '{task.get('name')}' allocated to Node {chosen_node} (GPUs needed: {req_gpus})"
         )
+
+        # Record allocation decision
+        allocation_decisions.append({
+            "task_name": task.get("name"),
+            "requirements": {"gpus": req_gpus, "nics": req_nics},
+            "node_scores": node_scores,
+            "chosen_node": chosen_node
+        })
+
         allocated_task = {
             "name": task.get("name"),
             "template": template_name,
@@ -780,6 +976,20 @@ def handle_allocator(spec, name, namespace, body, **kwargs):
             plural="compute-jobs",
             body=computej_body,
         )
+
+        # Save allocator intent provenance
+        storage_pvc = spec.get("storage", {}).get("results", f"{namespace}-storage")
+        allocator_intent = {
+            "job_type": "allocator",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "storage_pvc": storage_pvc,
+            "allocation_decisions": allocation_decisions,
+            "original_tasks": tasks,
+            "allocated_tasks": allocated_tasks,
+            "created_compute_job": computej_body["metadata"]["name"]
+        }
+        save_intent_provenance(namespace, name, storage_pvc, allocator_intent)
+
         return {"status": "Allocated", "compute_job": computej_body["metadata"]["name"]}
     except Exception as e:
         raise kopf.PermanentError(f"Failed to create ComputeJ: {e}")
