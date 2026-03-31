@@ -1,0 +1,155 @@
+apiVersion: coldpress.io/v1
+kind: WorkloadTemplate
+metadata:
+  name: deepti-parser
+  namespace: coldpress-admin
+spec:
+  requirements:
+    num_nodes: "1"
+    gpus_per_node: "{num_gpus}"
+    roce_nics_per_node: "0"
+  user_params:
+    - model_name
+    - model_class
+    - processor_class
+    - imports
+    - model_init
+    - media_processor
+    - prompt
+    - max_new_tokens
+  allocator_params:
+    - num_gpus
+  image: "quay.io/jschless/ml-dev-env:pytorch-2.9-numpy2"
+  env:
+    - name: "HOME"
+      value: "/tmp"
+    - name: "TRANSFORMERS_CACHE"
+      value: "/tmp/.cache/transformers"
+    - name: "HF_HOME"
+      value: "/tmp/.cache/huggingface"
+    - name: "TRITON_CACHE_DIR"
+      value: "/tmp/.triton"
+  command: ["bash", "-c"]
+  args:
+    - |
+      set -e
+      mkdir -p /tmp/result
+      cd /tmp/result
+
+      cat << 'EOF' > /tmp/result/workload.py
+      import os
+      import subprocess
+      import torch
+      from transformers import modeling_utils
+
+      # Fix for transformers post_init bug
+      if not hasattr(modeling_utils, "ALL_PARALLEL_STYLES") or modeling_utils.ALL_PARALLEL_STYLES is None:
+          modeling_utils.ALL_PARALLEL_STYLES = ["tp", "none", "colwise", "rowwise"]
+
+      import transformers.utils.import_utils
+      def _bypass_check(): pass
+      transformers.utils.import_utils.check_torch_load_is_safe = _bypass_check
+
+      {imports}
+
+      DUMMY_VIDEO = "test_video.mp4"
+
+      if not os.path.exists(DUMMY_VIDEO):
+          print("[INFO] Creating dummy video with ffmpeg...")
+          subprocess.run([
+              "ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=224x224:rate=5",
+              "-t", "2", "-pix_fmt", "yuv420p", DUMMY_VIDEO,
+          ], check=True)
+
+      assert os.path.exists(DUMMY_VIDEO), "ffmpeg failed to create dummy video"
+      print("[OK] ffmpeg works")
+
+      MODEL_NAME = "{model_name}"
+      print(f"[INFO] Loading model: {{MODEL_NAME}}...")
+
+      model = {model_class}.from_pretrained(
+          MODEL_NAME,
+          torch_dtype=torch.bfloat16,
+          device_map="auto",
+          attn_implementation="flash_attention_2",
+          trust_remote_code=True,
+      )
+      {model_init}
+      processor = {processor_class}.from_pretrained(MODEL_NAME)
+      print("[OK] Model + processor loaded")
+
+      # Double braces {{{{ }}}} escape literal dict declarations for Coldpress templating
+      conversation = [
+          {{
+              "role": "system",
+              "content": [{{"type": "text", "text": "You are a helpful multimodal assistant."}}],
+          }},
+          {{
+              "role": "user",
+              "content": [
+                  {{"type": "video", "video": DUMMY_VIDEO}},
+                  {{"type": "text", "text": "{prompt}"}},
+              ],
+          }},
+      ]
+
+      text = processor.apply_chat_template(
+          conversation,
+          add_generation_prompt=True,
+          tokenize=False,
+      )
+
+      {media_processor}
+
+      inputs = processor(
+          text=text,
+          videos=videos,
+          audio=audios,
+          images=images,
+          return_tensors="pt",
+          padding=True,
+          use_audio_in_video=False,
+      )
+
+      inputs = inputs.to(model.device).to(model.dtype)
+
+      print("[INFO] Running generation...")
+      with torch.no_grad():
+          output_ids = model.generate(
+              **inputs,
+              max_new_tokens={max_new_tokens},
+          )
+
+      decoded = processor.batch_decode(
+          output_ids,
+          skip_special_tokens=True,
+          clean_up_tokenization_spaces=False,
+      )
+
+      answer = decoded[0].split("\\nassistant\\n")[-1].strip()
+
+      print("\\n=== MODEL OUTPUT ===")
+      print(answer)
+      print("====================")
+      print("[SUCCESS] Multimodal inference test completed")
+
+      with open("/tmp/result/output.txt", "w") as f:
+          f.write(answer)
+      EOF
+
+      echo "Executing workload.py..."
+      python3 /tmp/result/workload.py 2>&1 | tee /tmp/result/output.log
+  blocking:
+    type: "completion"
+  resources:
+    limits:
+      nvidia.com/gpu: "{num_gpus}"
+  tolerate_all: true
+  ephemeral_mounts:
+    - target: "/tmp/result"
+      size: "2000Mi"
+  sys_mounts: []
+  files_to_copy:
+    - "output.txt"
+    - "output.log"
+    - "workload.py"
