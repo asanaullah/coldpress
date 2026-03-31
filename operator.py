@@ -2,6 +2,7 @@
 import kopf
 import math
 import logging
+import yaml
 from kubernetes import client
 from models import ConfigFile
 from openshift_runtime import runtime
@@ -271,6 +272,220 @@ def create_compute_job(spec, name, namespace, body, **kwargs):
         raise kopf.PermanentError(f"Failed to launch job: {e}")
 
 
+def dump_provenance_to_pvc(namespace, job_name, compute_job_body, allocator_name=None):
+    """Dump complete provenance to PVC before cleanup"""
+    try:
+        api = client.CustomObjectsApi()
+        core_api = client.CoreV1Api()
+
+        # Get the ColdpressResourceAllocator if we have the name
+        allocator_data = None
+        if allocator_name:
+            try:
+                allocator_data = api.get_namespaced_custom_object(
+                    group="coldpress.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="coldpressresourceallocators",
+                    name=allocator_name
+                )
+            except Exception as e:
+                logging.warning(f"Could not retrieve allocator {allocator_name}: {e}")
+
+        # Reconstruct base_dir from compute job metadata
+        # base_dir format: coldpress_results/{name}_{timestamp}
+        creation_time = compute_job_body.get("metadata", {}).get("creationTimestamp")
+        base_dir = None
+        if creation_time:
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(creation_time.replace('Z', '+00:00'))
+                timestamp_str = dt.strftime('%Y%m%d_%H%M%S')
+                base_dir = f"coldpress_results/{job_name}_{timestamp_str}"
+            except Exception as e:
+                logging.warning(f"Could not parse creation timestamp: {e}")
+
+        # Get the JobSet (contains actual rendered pod specs)
+        jobset_name = f"cpj-{job_name}"
+        jobset_data = None
+        try:
+            jobset_data = api.get_namespaced_custom_object(
+                group="jobset.x-k8s.io",
+                version="v1alpha2",
+                namespace=namespace,
+                plural="jobsets",
+                name=jobset_name
+            )
+        except Exception as e:
+            logging.warning(f"Could not retrieve JobSet {jobset_name}: {e}")
+
+        # Get all pods created by this job (for final status/logs info)
+        pods_data = []
+        try:
+            # List all pods in namespace and filter by name prefix
+            pods = core_api.list_namespaced_pod(namespace=namespace)
+            # Filter pods that belong to this jobset
+            for pod in pods.items:
+                pod_name = pod.metadata.name
+                # Pod names follow pattern: cpj-{job_name}-{task}-{replica}-{index}-{hash}
+                if pod_name.startswith(f"cpj-{job_name}-"):
+                    pods_data.append({
+                        "name": pod.metadata.name,
+                        "node": pod.spec.node_name,
+                        "phase": pod.status.phase,
+                        "start_time": pod.status.start_time.isoformat() if pod.status.start_time else None,
+                        "container_statuses": [
+                            {
+                                "name": cs.name,
+                                "state": str(cs.state),
+                                "ready": cs.ready,
+                                "restart_count": cs.restart_count,
+                                "image": cs.image
+                            } for cs in (pod.status.container_statuses or [])
+                        ],
+                        "spec": api.api_client.sanitize_for_serialization(pod.spec)
+                    })
+        except Exception as e:
+            logging.warning(f"Could not retrieve pods for {job_name}: {e}")
+
+        # Get template definitions (workload-templates from admin namespace)
+        templates_data = {}
+        try:
+            tasks = compute_job_body.get("spec", {}).get("tasks", [])
+            template_names = set(task.get("template") for task in tasks if task.get("template"))
+
+            for template_name in template_names:
+                try:
+                    template = api.get_namespaced_custom_object(
+                        group="coldpress.io",
+                        version="v1",
+                        namespace="coldpress-admin",
+                        plural="workload-templates",
+                        name=template_name
+                    )
+                    templates_data[template_name] = template
+                except Exception as e:
+                    logging.warning(f"Could not retrieve template {template_name}: {e}")
+        except Exception as e:
+            logging.warning(f"Could not retrieve templates: {e}")
+
+        # Get node information (GPU types available at the time)
+        nodes_data = {}
+        try:
+            # Get all nodes that were used
+            nodes_used = set(pod_info.get("node") for pod_info in pods_data if pod_info.get("node"))
+            core_api_client = client.CoreV1Api()
+            for node_name in nodes_used:
+                try:
+                    node = core_api_client.read_node(node_name)
+                    nodes_data[node_name] = {
+                        "labels": node.metadata.labels,
+                        "allocatable": node.status.allocatable,
+                        "capacity": node.status.capacity,
+                    }
+                except Exception as e:
+                    logging.warning(f"Could not retrieve node {node_name}: {e}")
+        except Exception as e:
+            logging.warning(f"Could not retrieve node info: {e}")
+
+        # Create provenance record
+        provenance = {
+            "job_name": job_name,
+            "namespace": namespace,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "compute_job": compute_job_body,
+            "resource_allocator": allocator_data,
+            "templates": templates_data,
+            "jobset": jobset_data,
+            "nodes": nodes_data,
+            "pods": pods_data
+        }
+
+        # Write to PVC via a temporary pod
+        provenance_yaml = yaml.dump(provenance, default_flow_style=False)
+
+        # Find the results PVC
+        storage_pvc = f"{namespace}-storage"
+
+        # Escape single quotes in YAML for shell heredoc
+        provenance_yaml_escaped = provenance_yaml.replace("'", "'\\''")
+
+        # Determine provenance file path
+        if base_dir:
+            # Save inside the timestamped results directory
+            provenance_path = f"/data/{base_dir}/provenance.yaml"
+            mkdir_cmd = f"mkdir -p /data/{base_dir} && "
+        else:
+            # Fallback to root if base_dir not found
+            provenance_path = f"/data/provenance_{job_name}.yaml"
+            mkdir_cmd = ""
+
+        # Create a simple pod to write the file
+        write_pod = client.V1Pod(
+            metadata=client.V1ObjectMeta(
+                name=f"provenance-writer-{job_name}"[:63],
+                namespace=namespace
+            ),
+            spec=client.V1PodSpec(
+                restart_policy="Never",
+                containers=[
+                    client.V1Container(
+                        name="writer",
+                        image="registry.access.redhat.com/ubi9/ubi-minimal:latest",
+                        command=["sh", "-c", f"{mkdir_cmd}cat > {provenance_path} << 'EOF'\n{provenance_yaml_escaped}\nEOF"],
+                        volume_mounts=[
+                            client.V1VolumeMount(
+                                name="results",
+                                mount_path="/data"
+                            )
+                        ]
+                    )
+                ],
+                volumes=[
+                    client.V1Volume(
+                        name="results",
+                        persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                            claim_name=storage_pvc
+                        )
+                    )
+                ]
+            )
+        )
+
+        core_api.create_namespaced_pod(namespace, write_pod)
+        logging.info(f"Provenance dumped to PVC {storage_pvc}/{provenance_path}")
+
+        # Wait for provenance writer to complete, then clean it up
+        import time
+        max_wait = 60
+        for i in range(max_wait):
+            try:
+                pod_status = core_api.read_namespaced_pod(
+                    name=write_pod.metadata.name,
+                    namespace=namespace
+                )
+                if pod_status.status.phase in ["Succeeded", "Failed"]:
+                    # Delete the provenance writer pod
+                    try:
+                        core_api.delete_namespaced_pod(
+                            name=write_pod.metadata.name,
+                            namespace=namespace
+                        )
+                        logging.info(f"Cleaned up provenance writer pod {write_pod.metadata.name}")
+                    except Exception as del_e:
+                        logging.warning(f"Could not delete provenance writer pod: {del_e}")
+                    break
+            except Exception as read_e:
+                # RBAC permission issue or pod not ready yet
+                if i > 10:  # Only log after 10 seconds
+                    logging.warning(f"Could not read provenance writer pod status: {read_e}")
+                pass
+            time.sleep(1)
+
+    except Exception as e:
+        logging.error(f"Failed to dump provenance for {job_name}: {e}")
+
+
 @kopf.on.delete("coldpress.io", "v1", "compute-jobs")
 @kopf.on.delete("coldpress.io", "v1", "discovery-jobs")
 def delete_job(name, namespace, **kwargs):
@@ -306,6 +521,17 @@ def monitor_status(name, namespace, body, **kwargs):
         logging.info(
             f"Job {job_id} finished with state {state}. Initiating complete garbage collection."
         )
+
+        # DUMP PROVENANCE BEFORE CLEANUP
+        owner_refs = body.get("metadata", {}).get("ownerReferences", [])
+        allocator_name = None
+        for ref in owner_refs:
+            if ref.get("kind") == "ColdpressResourceAllocator":
+                allocator_name = ref.get("name")
+                break
+
+        dump_provenance_to_pvc(namespace, name, body, allocator_name)
+
         rt.delete(job_id, namespace)
         api = client.CustomObjectsApi()
         group = "coldpress.io"
@@ -327,25 +553,24 @@ def monitor_status(name, namespace, body, **kwargs):
         except client.exceptions.ApiException as e:
             if e.status != 404:
                 logging.error(f"Failed to delete CR {name}: {e}")
-        owner_refs = body.get("metadata", {}).get("ownerReferences", [])
-        for ref in owner_refs:
-            if ref.get("kind") == "ColdpressResourceAllocator":
-                parent_name = ref.get("name")
-                try:
-                    logging.info(
-                        f"Deleting parent Allocator CR {parent_name} in {namespace}"
-                    )
-                    api.delete_namespaced_custom_object(
-                        group=group,
-                        version=version,
-                        namespace=namespace,
-                        plural="coldpressresourceallocators",
-                        name=parent_name,
-                        body=client.V1DeleteOptions(),
-                    )
-                except client.exceptions.ApiException as e:
-                    if e.status != 404:
-                        logging.error(f"Failed to delete parent CRA {parent_name}: {e}")
+
+        # Delete parent ColdpressResourceAllocator if exists
+        if allocator_name:
+            try:
+                logging.info(
+                    f"Deleting parent Allocator CR {allocator_name} in {namespace}"
+                )
+                api.delete_namespaced_custom_object(
+                    group=group,
+                    version=version,
+                    namespace=namespace,
+                    plural="coldpressresourceallocators",
+                    name=allocator_name,
+                    body=client.V1DeleteOptions(),
+                )
+            except client.exceptions.ApiException as e:
+                if e.status != 404:
+                    logging.error(f"Failed to delete parent CRA {allocator_name}: {e}")
     return status_info
 
 
