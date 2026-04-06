@@ -285,7 +285,7 @@ def cleanup_pod(pod_name, namespace="researcher-b"):
 # COLDPRESS (researcher-c)
 ######################################
 
-def submit_job(job_name, template, params, namespace="researcher-c", storage="researcher-c-storage"):
+def submit_job(job_name, template, params, namespace="researcher-a", storage="researcher-a-storage", discovery_templates=None):
     """Submit a Coldpress job with given parameters."""
     allocator_yaml = f"""apiVersion: coldpress.io/v1
 kind: ColdpressResourceAllocator
@@ -293,7 +293,15 @@ metadata:
   name: {job_name}
   namespace: {namespace}
 spec:
-  storage:
+"""
+
+    # Add discovery templates if provided
+    if discovery_templates:
+        allocator_yaml += "  discovery_templates:\n"
+        for dt in discovery_templates:
+            allocator_yaml += f"    - {dt}\n"
+
+    allocator_yaml += f"""  storage:
     results: {storage}
   tasks:
   - name: {job_name}-task
@@ -314,13 +322,15 @@ spec:
 
     if result.returncode == 0:
         print(f"[OK] Job '{job_name}' submitted")
+        if discovery_templates:
+            print(f"     Discovery templates: {', '.join(discovery_templates)}")
         return True
     else:
         print(f"✗ Failed to submit job: {result.stderr}")
         return False
 
 
-def wait_for_completion(job_name, namespace="researcher-c", timeout=600):
+def wait_for_completion(job_name, namespace="researcher-a", timeout=600):
     """Wait for job to complete (CR is auto-deleted on completion)."""
     print(f"[WAIT] Waiting for job '{job_name}' to complete...")
 
@@ -343,13 +353,13 @@ def wait_for_completion(job_name, namespace="researcher-c", timeout=600):
     return False
 
 
-def get_provenance(job_name, namespace="researcher-c"):
-    """Display provenance summary from PVC."""
+def get_provenance(job_name, namespace="researcher-a"):
+    """Display provenance summary from PVC using new JSON provenance structure."""
 
     # Find latest results directory
     result = subprocess.run(
-        ["oc", "exec", "researcher-c-data-explorer", "-n", namespace, "--",
-         "sh", "-c", f"ls -dt /data/coldpress*/{job_name}-* 2>/dev/null | head -1"],
+        ["oc", "exec", "researcher-a-data-explorer", "-n", namespace, "--",
+         "sh", "-c", f"ls -dt /data/{namespace}/coldpress*/{job_name}-* 2>/dev/null | head -1"],
         capture_output=True,
         text=True
     )
@@ -366,120 +376,117 @@ def get_provenance(job_name, namespace="researcher-c"):
     print(f"\nResults: {result_dir}")
     print("[OK] Persisted in PVC forever\n")
 
-    # 1. User Configuration
+    # 1. User Configuration - from allocator intent
     print("-" * 80)
     print("USER CONFIGURATION")
     print("-" * 80)
 
+    # Find allocator intent file
     result = subprocess.run(
-        ["oc", "exec", "researcher-c-data-explorer", "-n", namespace, "--",
-         "sh", "-c", f"grep -E '(model_name|prompt|max_new_tokens|num_gpus):' {result_dir}/provenance.yaml | grep -v 'f:' | head -4"],
-        capture_output=True,
-        text=True
-    )
-
-    for line in result.stdout.strip().split('\n'):
-        cleaned = line.strip().replace("'", "")
-        print(f"  {cleaned}")
-
-    # 2. Executed Script (first 15 lines)
-    print("\n" + "-" * 80)
-    print("EXECUTED SCRIPT (first 15 lines)")
-    print("-" * 80)
-
-    result = subprocess.run(
-        ["oc", "exec", "researcher-c-data-explorer", "-n", namespace, "--",
-         "sh", "-c", f"head -15 {result_dir}/0/workload.py 2>/dev/null"],
+        ["oc", "exec", "researcher-a-data-explorer", "-n", namespace, "--",
+         "sh", "-c", f"cat {result_dir}/provenance_intent_allocator_*.json 2>/dev/null"],
         capture_output=True,
         text=True
     )
 
     if result.stdout:
-        for line in result.stdout.strip().split('\n'):
-            print(f"  {line}")
-        print("  ...")
-    else:
-        print("  Script not found")
+        try:
+            allocator_data = json.loads(result.stdout)
+            if 'original_tasks' in allocator_data and len(allocator_data['original_tasks']) > 0:
+                params = allocator_data['original_tasks'][0].get('params', {})
+                # Print params in alphabetical order
+                for key in sorted(params.keys()):
+                    print(f"  {key}: {params[key]}")
+        except json.JSONDecodeError:
+            print("  Could not parse allocator intent")
 
-    # 3. Execution Timeline
+    # 2. Executed Script - from computej intent
+    print("\n" + "-" * 80)
+    print("EXECUTED SCRIPT (first 20 lines)")
+    print("-" * 80)
+
+    result = subprocess.run(
+        ["oc", "exec", "researcher-a-data-explorer", "-n", namespace, "--",
+         "sh", "-c", f"cat {result_dir}/provenance_intent_computej_*.json 2>/dev/null"],
+        capture_output=True,
+        text=True
+    )
+
+    if result.stdout:
+        try:
+            computej_data = json.loads(result.stdout)
+            if 'task_list' in computej_data and len(computej_data['task_list']) > 0:
+                task = computej_data['task_list'][0]
+                args = task['params']['run_params'].get('args', [])
+                if args and len(args) > 0:
+                    # Extract the script portion from the args
+                    script_text = args[0]
+                    lines = script_text.split('\n')[:20]
+                    for line in lines:
+                        print(f"  {line}")
+                    if len(script_text.split('\n')) > 20:
+                        print("  ...")
+        except (json.JSONDecodeError, KeyError, IndexError):
+            print("  Could not parse compute job intent")
+
+    # 3. Execution Timeline - from execution provenance
     print("\n" + "-" * 80)
     print("EXECUTION TIMELINE")
     print("-" * 80)
 
     result = subprocess.run(
-        ["oc", "exec", "researcher-c-data-explorer", "-n", namespace, "--",
-         "sh", "-c", f"cat {result_dir}/provenance.yaml | grep -E '(creationTimestamp|start_time|started_at|finished_at|timestamp|exit_code|phase):' | grep -v 'f:' | grep -v 'lastTransitionTime'"],
+        ["oc", "exec", "researcher-a-data-explorer", "-n", namespace, "--",
+         "sh", "-c", f"cat {result_dir}/provenance_execution_*.json 2>/dev/null | python3 -m json.tool 2>/dev/null | head -100"],
         capture_output=True,
         text=True
     )
 
-    lines = result.stdout.strip().split('\n')
-    timeline = []
-    exit_code = None
-    phase = None
-
-    for line in lines:
-        if 'creationTimestamp' in line and not any('Job' in t for t, _ in timeline):
-            match = re.search(r"'([0-9T:Z-]+)'", line)
-            if match:
-                timeline.append(("Job Created", match.group(1)))
-        elif 'start_time' in line:
-            match = re.search(r"'([0-9T:+-]+)'", line)
-            if match:
-                timeline.append(("Pod Started", match.group(1)))
-        elif 'started_at' in line:
-            match = re.search(r'datetime\.datetime\((\d+), (\d+), (\d+), (\d+), (\d+), (\d+)', line)
-            if match:
-                y, m, d, h, mi, s = [int(x) for x in match.groups()]
-                timeline.append(("Container Started", f"{y}-{m:02d}-{d:02d}T{h:02d}:{mi:02d}:{s:02d}Z"))
-        elif 'finished_at' in line:
-            match = re.search(r'datetime\.datetime\((\d+), (\d+), (\d+), (\d+), (\d+), (\d+)', line)
-            if match:
-                y, m, d, h, mi, s = [int(x) for x in match.groups()]
-                timeline.append(("Container Finished", f"{y}-{m:02d}-{d:02d}T{h:02d}:{mi:02d}:{s:02d}Z"))
-        elif line.strip().startswith('timestamp:'):
-            match = re.search(r"'([0-9T:+.-]+)'", line)
-            if match:
-                timeline.append(("Provenance Saved", match.group(1)))
-        elif 'exit_code' in line:
-            match = re.search(r"'exit_code': (\d+)", line)
-            if match:
-                exit_code = match.group(1)
-        elif 'phase:' in line:
-            match = re.search(r'phase: (\w+)', line)
-            if match and not phase:
-                phase = match.group(1)
-
-    print(f"\n  {'Event':<30} {'Timestamp':<35}")
-    print("  " + "-" * 65)
-    for event, ts in timeline:
-        print(f"  {event:<30} {ts:<35}")
-    if exit_code:
-        print(f"  {'Exit Code':<30} {exit_code:<35}")
-    if phase:
-        print(f"  {'Phase':<30} {phase:<35}")
-
-    container_events = {e: t for e, t in timeline}
-    if "Container Started" in container_events and "Container Finished" in container_events:
+    if result.stdout:
         try:
-            start = datetime.fromisoformat(container_events["Container Started"].replace('Z', '+00:00'))
-            end = datetime.fromisoformat(container_events["Container Finished"].replace('Z', '+00:00'))
-            duration = int((end - start).total_seconds())
-            print(f"  {'Duration':<30} {duration} seconds")
-        except:
-            pass
+            # Read full execution data
+            result_full = subprocess.run(
+                ["oc", "exec", "researcher-a-data-explorer", "-n", namespace, "--",
+                 "sh", "-c", f"cat {result_dir}/provenance_execution_*.json 2>/dev/null"],
+                capture_output=True,
+                text=True
+            )
+            exec_data = json.loads(result_full.stdout)
+
+            print(f"\n  {'Event':<30} {'Timestamp':<35}")
+            print("  " + "-" * 65)
+
+            # Job created timestamp
+            if 'timestamp' in exec_data:
+                print(f"  {'Job Created':<30} {exec_data['timestamp']:<35}")
+
+            # Pod/container events from pods array
+            if 'pods' in exec_data:
+                for pod in exec_data['pods']:
+                    if 'start_time' in pod:
+                        print(f"  {'Pod Started':<30} {pod['start_time']:<35}")
+                        break
+
+            # Get phase from jobset
+            if 'jobset' in exec_data and 'status' in exec_data['jobset']:
+                conditions = exec_data['jobset']['status'].get('conditions', [])
+                for cond in conditions:
+                    if cond.get('type') == 'Completed' and cond.get('status') == 'True':
+                        print(f"  {'Job Completed':<30} {cond.get('lastTransitionTime', 'N/A'):<35}")
+
+        except (json.JSONDecodeError, KeyError):
+            print("  Could not parse execution provenance")
 
     print("\n" + "=" * 80)
     return result_dir
 
 
-def get_results(job_name, namespace="researcher-c"):
+def get_results(job_name, namespace="researcher-a"):
     """Display job results from PVC."""
 
     # Find latest results directory
     result = subprocess.run(
-        ["oc", "exec", "researcher-c-data-explorer", "-n", namespace, "--",
-         "sh", "-c", f"ls -dt /data/coldpress*/{job_name}-* 2>/dev/null | head -1"],
+        ["oc", "exec", "researcher-a-data-explorer", "-n", namespace, "--",
+         "sh", "-c", f"ls -dt /data/{namespace}/coldpress*/{job_name}-* 2>/dev/null | head -1"],
         capture_output=True,
         text=True
     )
@@ -495,7 +502,7 @@ def get_results(job_name, namespace="researcher-c"):
     print("=" * 80)
 
     result = subprocess.run(
-        ["oc", "exec", "researcher-c-data-explorer", "-n", namespace, "--",
+        ["oc", "exec", "researcher-a-data-explorer", "-n", namespace, "--",
          "sh", "-c", f"tail -20 {result_dir}/0/output.log 2>/dev/null"],
         capture_output=True,
         text=True
@@ -515,52 +522,10 @@ def get_results(job_name, namespace="researcher-c"):
 ######################################
 
 def setup_namespaces():
-    """Setup both researcher-b and researcher-c namespaces with all required infrastructure."""
+    """Verify researcher-a and researcher-b namespaces exist with required infrastructure."""
     import subprocess
-    import time
 
-    print("Setting up namespaces and infrastructure...\n")
-
-    # researcher-c (Coldpress user)
-    result = subprocess.run(
-        ["oc", "get", "namespace", "researcher-c"],
-        capture_output=True,
-        text=True
-    )
-
-    if result.returncode != 0:
-        researcher_c_yaml = """
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: researcher-c
-  labels:
-    kueue.openshift.io/managed: "true"
-  annotations:
-    coldpress.io/allowed-allocator-parsers: "deepti-parser"
-    coldpress.io/allowed-compute-parsers: ""
-"""
-        with open('/tmp/researcher-c-ns.yaml', 'w') as f:
-            f.write(researcher_c_yaml)
-        subprocess.run(["oc", "apply", "-f", "/tmp/researcher-c-ns.yaml", "--as", "system:admin"], capture_output=True)
-        print("[OK] Created researcher-c namespace")
-    else:
-        print("[OK] researcher-c namespace exists")
-
-    # LocalQueue
-    localqueue_yaml = """
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: LocalQueue
-metadata:
-  namespace: researcher-c
-  name: local-queue-researcher-c
-spec:
-  clusterQueue: cluster-queue-test
-"""
-    with open('/tmp/researcher-c-localqueue.yaml', 'w') as f:
-        f.write(localqueue_yaml)
-    subprocess.run(["oc", "apply", "-f", "/tmp/researcher-c-localqueue.yaml", "--as", "system:admin"], capture_output=True)
-    print("[OK] LocalQueue configured")
+    print("Verifying namespaces and infrastructure...\n")
 
     # Get current user
     current_user = subprocess.run(
@@ -569,107 +534,42 @@ spec:
         text=True
     ).stdout.strip()
 
-    # RBAC
-    rbac_yaml = f"""
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: coldpress-user-role
-  namespace: researcher-c
-rules:
-  - apiGroups: ["coldpress.io"]
-    resources: ["coldpressresourceallocators", "compute-jobs"]
-    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
-  - apiGroups: ["jobset.x-k8s.io"]
-    resources: ["jobsets"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["pods", "pods/log"]
-    verbs: ["get", "list", "watch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: coldpress-user-binding
-  namespace: researcher-c
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: coldpress-user-role
-subjects:
-  - kind: User
-    name: {current_user}
-    apiGroup: rbac.authorization.k8s.io
-"""
-    with open('/tmp/researcher-c-rbac.yaml', 'w') as f:
-        f.write(rbac_yaml)
-    subprocess.run(["oc", "apply", "-f", "/tmp/researcher-c-rbac.yaml", "--as", "system:admin"], capture_output=True)
-    print("[OK] RBAC configured")
+    # Check researcher-a (Coldpress user)
+    result = subprocess.run(
+        ["oc", "get", "namespace", "researcher-a"],
+        capture_output=True,
+        text=True
+    )
 
-    # PVC
-    result = subprocess.run(["oc", "get", "pvc", "researcher-c-storage", "-n", "researcher-c"], capture_output=True)
-    if result.returncode != 0:
-        pvc_yaml = """
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: researcher-c-storage
-  namespace: researcher-c
-spec:
-  storageClassName: nfs-csi
-  accessModes: [ "ReadWriteMany" ]
-  resources: { requests: { storage: 500Gi } }
-"""
-        with open('/tmp/researcher-c-pvc.yaml', 'w') as f:
-            f.write(pvc_yaml)
-        subprocess.run(["oc", "apply", "-f", "/tmp/researcher-c-pvc.yaml", "--as", "system:admin"], capture_output=True)
-        print("[OK] PVC created")
+    if result.returncode == 0:
+        print("[OK] researcher-a namespace exists")
     else:
-        print("[OK] PVC exists")
+        print("[ERROR] researcher-a namespace not found - please ensure it's created")
+        return False
 
-    # Helper pod
-    result = subprocess.run(["oc", "get", "pod", "researcher-c-data-explorer", "-n", "researcher-c"], capture_output=True)
-    if result.returncode != 0:
-        helper_pod_yaml = """
-apiVersion: v1
-kind: Pod
-metadata:
-  name: researcher-c-data-explorer
-  namespace: researcher-c
-spec:
-  restartPolicy: Never
-  containers:
-    - name: explorer
-      image: alpine
-      command: ["sleep", "infinity"]
-      volumeMounts:
-        - mountPath: "/data"
-          name: myvol
-  volumes:
-    - name: myvol
-      persistentVolumeClaim:
-        claimName: researcher-c-storage
-"""
-        with open('/tmp/helper-pod-c.yaml', 'w') as f:
-            f.write(helper_pod_yaml)
-        subprocess.run(["oc", "apply", "-f", "/tmp/helper-pod-c.yaml", "--as", "system:admin"], capture_output=True)
-
-        # Wait for pod
-        start_time = time.time()
-        while time.time() - start_time < 60:
-            result = subprocess.run(
-                ["oc", "get", "pod", "researcher-c-data-explorer", "-n", "researcher-c", "-o", "jsonpath={.status.phase}"],
-                capture_output=True, text=True
-            )
-            if result.stdout.strip() == "Running":
-                break
-            time.sleep(2)
-        print("[OK] Helper pod created")
+    # Check PVC
+    result = subprocess.run(
+        ["oc", "get", "pvc", "researcher-a-storage", "-n", "researcher-a"],
+        capture_output=True,
+        text=True
+    )
+    if result.returncode == 0:
+        print("[OK] researcher-a-storage PVC exists")
     else:
-        print("[OK] Helper pod exists")
+        print("[ERROR] researcher-a-storage PVC not found")
+        return False
+
+    # Check helper pod
+    result = subprocess.run(
+        ["oc", "get", "pod", "researcher-a-data-explorer", "-n", "researcher-a"],
+        capture_output=True,
+        text=True
+    )
+    if result.returncode == 0:
+        print("[OK] researcher-a-data-explorer pod exists")
+    else:
+        print("[ERROR] researcher-a-data-explorer pod not found")
+        return False
 
     # researcher-b (Traditional K8s)
     result = subprocess.run(["oc", "get", "namespace", "researcher-b"], capture_output=True)
@@ -681,6 +581,13 @@ spec:
         print("[OK] researcher-b namespace exists")
 
     print("\n[OK] Setup complete")
+    return True
+
+
+# Auto-run setup when module is imported
+print("=" * 80)
+setup_namespaces()
+print("=" * 80)
 
 
 def discover_gpu_nodes():
