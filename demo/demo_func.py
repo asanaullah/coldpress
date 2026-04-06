@@ -714,7 +714,6 @@ def plot_complexity_comparison():
     # Higher operational complexity upfront, but stays constant - automation handles everything
     coldpress = np.full_like(x, 5.5)
 
-    ax.plot(x, slurm, 'b-', linewidth=2.5, label='Slurm')
     ax.plot(x, trad_k8s, 'r-', linewidth=2.5, label='Traditional K8s')
     ax.plot(x, coldpress, 'g-', linewidth=2.5, label='Coldpress')
 
@@ -726,11 +725,6 @@ def plot_complexity_comparison():
     # Annotations
     ax.annotate('Run workload\nbash script (x=0)', xy=(0.3, 0.8), fontsize=10,
                 ha='left', va='bottom', color='black', fontweight='bold')
-    ax.annotate('Slurm: excellent for\npure batch workloads', xy=(7.0, slurm[70]), fontsize=9,
-                ha='right', va='bottom', color='blue')
-    ax.annotate('Complexity increases\nbeyond native capabilities',
-                xy=(8.8, slurm[88]), fontsize=9, ha='left', va='bottom', color='blue',
-                bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.7))
     ax.annotate('Coldpress becomes\nsimpler to use', xy=(x[crossover_idx], coldpress[crossover_idx]),
                 xytext=(x[crossover_idx]-1.5, coldpress[crossover_idx]+1), fontsize=10, ha='center',
                 arrowprops=dict(arrowstyle='->', color='black', lw=1.5))
