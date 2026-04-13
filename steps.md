@@ -109,8 +109,8 @@ coldpress-setup apply cluster ocp-test-nerc-mghpcc.yaml
 
 **Verification:**
 ```bash
-kubectl get clusterqueues
-kubectl get resourceflavors
+oc get clusterqueues
+oc get resourceflavors
 ```
 
 **You should see:**
@@ -144,9 +144,9 @@ coldpress-setup apply project researcher-a.yaml
 
 **Verification:**
 ```bash
-kubectl get namespace researcher-a
-kubectl get pvc -n researcher-a
-kubectl get localqueues -n researcher-a
+oc get namespace researcher-a
+oc get pvc -n researcher-a
+oc get localqueues -n researcher-a
 ```
 
 **You should see:**
@@ -165,34 +165,41 @@ local-queue-researcher-a    cluster-queue-coldpress   5s
 
 ## B3: Apply User RBAC
 
-**What:** Grant a user permission to submit jobs to the project namespace.
+**What:** Grant an existing cluster user permission to submit jobs to the project namespace.
 
 **Why:** Allows regular users to create and manage JobSets without admin privileges.
 
+**Prerequisites:**
+- User must already exist in the cluster's authentication system (OpenShift OAuth, LDAP, etc.)
+- Project configuration must be applied first (creates the Role that this RoleBinding references)
+
 **Command:**
 ```bash
-coldpress-setup apply user asanaullah.yaml
+coldpress-setup apply user coldpress-user.yaml
 ```
 
-**User config example** (`users/asanaullah.yaml`):
+**User config example** (`users/coldpress-user.yaml`):
 ```yaml
-username: asanaullah
+username: coldpress-user
 namespaces:
   - researcher-a
 ```
 
 **This creates:**
-- RoleBinding: `coldpress-user-asanaullah` in namespace `researcher-a`
+- RoleBinding: `coldpress-user-coldpress-user` in namespace `researcher-a`
+- Binds existing user to existing Role: `coldpress-user-role` (created by project setup)
 - Grants permissions: create/manage JobSets, view Jobs/Pods/Services
+
+**Important:** This does NOT create a user account. Users must already exist in your cluster's authentication system.
 
 **Verification:**
 ```bash
-kubectl get rolebindings -n researcher-a | grep coldpress-user
+oc get rolebindings -n researcher-a | grep coldpress-user
 ```
 
 **Expected output:**
 ```
-coldpress-user-asanaullah   5s
+coldpress-user-coldpress-user   5s
 ```
 
 **Result:** Cluster, project, and user configuration is now complete. Regular users can submit jobs.
@@ -454,10 +461,10 @@ ls -lh checkpoints/model_weights.pth
 exit
 ```
 
-### Option 2: Quick check with kubectl
+### Option 2: Quick check with oc
 
 ```bash
-kubectl run check-results --rm -i --restart=Never \
+oc run check-results --rm -i --restart=Never \
   --image=ubi9/ubi-minimal -n researcher-a \
   --overrides='{"spec":{"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"researcher-a-storage"}}],"containers":[{"name":"check","image":"ubi9/ubi-minimal","command":["ls","-lR","/data/researcher-a/coldpress_results"],"volumeMounts":[{"name":"data","mountPath":"/data"}]}]}}'
 ```
@@ -536,10 +543,10 @@ Cleanup complete!
 
 **Verification:**
 ```bash
-kubectl get jobset,job,pod,configmap -n researcher-a | grep ddp-training
+oc get jobset,job,pod,configmap -n researcher-a | grep ddp-training
 # Output: No resources found (all cleaned up)
 
-kubectl get pvc -n researcher-a
+oc get pvc -n researcher-a
 # Output: researcher-a-storage still exists with all results intact
 ```
 

@@ -41,18 +41,21 @@ Apply project configuration:
 coldpress-setup apply project projects/researcher-a.yaml
 ```
 
-Apply user RBAC:
+Grant user access (user must already exist in cluster auth system):
 ```bash
-coldpress-setup apply user users/asanaullah.yaml
+coldpress-setup apply user users/coldpress-user.yaml
 ```
 
-**Note:** Config files can be stored anywhere - the subcommand (`cluster`, `project`, `user`) specifies the type.
+**Note:** 
+- Config files can be stored anywhere - the subcommand (`cluster`, `project`, `user`) specifies the type
+- User must already exist in the cluster's authentication system (OAuth, LDAP, etc.)
+- Project must be configured first (creates the Role that user RBAC references)
 
 This creates:
 - Node labels (`coldpress.node=0`, `coldpress.node=1`)
 - Kueue ResourceFlavors and ClusterQueue
 - Namespace with LocalQueue and PVC (500Gi)
-- User RBAC permissions for JobSet submission
+- RoleBindings granting user permissions to submit JobSets in specified namespaces
 
 ### 3. Generate Job
 
@@ -149,7 +152,7 @@ coldpress/
 - JobSet operator (for multi-task jobs)
 
 **Local development:**
-- Python 3.9+
+- Python 3.9+ (tested on Python 3.14)
 - `uv` (fast Python package installer - auto-installed by setup-env.sh)
 - **`kubectl` or `oc` CLI** (required for all cluster operations - must be installed separately)
 

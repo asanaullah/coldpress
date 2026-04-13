@@ -150,8 +150,8 @@ def user(config_file, output, dry_run):
     User config: Generate user RBAC (RoleBindings across namespaces)
 
     Examples:
-        coldpress-setup apply user asanaullah.yaml
-        coldpress-setup apply user asanaullah.yaml --dry-run
+        coldpress-setup apply user coldpress-user.yaml
+        coldpress-setup apply user coldpress-user.yaml --dry-run
     """
     # Resolve config file path
     config_file = _resolve_config_path(config_file, "user")
