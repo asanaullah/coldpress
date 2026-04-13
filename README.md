@@ -70,20 +70,18 @@ Coldpress is a local manifest generator for running AI/HPC workloads on Kubernet
 ### What Coldpress Does
 
 **For Administrators (`coldpress-setup`):**
-- Generates cluster-wide Kueue resources (ClusterQueue, ResourceFlavors)
-- Generates project namespaces with LocalQueues and PersistentVolumeClaims
+- Manages cluster-wide Kueue configuration (ClusterQueue, ResourceFlavors, LocalQueues)
+- Generates project namespaces with PersistentVolumeClaims
 - Generates user RBAC (RoleBindings) for job submission
 - Generates node labeling scripts (coldpress requires node labels for scheduling)
 - Outputs timestamped manifests for GitOps and auditing
-- **Note:** Does NOT install Kueue or JobSet operators (must be pre-installed)
+- **Note:** Kueue and JobSet operators must be pre-installed (coldpress configures them, does not install them)
 
 **For Users (`coldpress`):**
-- Reads job specifications (containers, resources, dependencies)
-- Generates JobSet manifests with:
-  - Task dependencies (endpoint blocking, completion blocking)
-  - Node affinity rules (explicit or scheduler-based)
-  - Volume mounts
-  - Hardware discovery init containers
+- Generates JobSet manifests from job specifications
+- Configures task dependencies (endpoint blocking, completion blocking)
+- Configures node affinity rules (explicit or scheduler-based)
+- Configures volume mounts and hardware discovery init containers
 - Creates helper scripts for job lifecycle management
 - Validates YAML schemas before generation (catches errors early)
 
