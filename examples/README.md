@@ -78,21 +78,24 @@ containers:
     image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
     command: ["python", "-m", "torch.distributed.run"]
     args:
-      - --nproc_per_node=4
+      - --nproc_per_node=2
       - --nnodes=1
       - train.py
       - --dataset=mnist
+      - --train-test-split=0.8
       - --epochs=50
       - --batch-size=128
+      - --hidden-size=4096
+      - --lr=0.01
       - --output-dir=/results/checkpoints
     resources:
       requests:
-        nvidia.com/gpu: "4"
-        memory: "32Gi"
-        cpu: "16"
+        nvidia.com/gpu: "2"
+        memory: "16Gi"
+        cpu: "8"
       limits:
-        nvidia.com/gpu: "4"
-        memory: "32Gi"
+        nvidia.com/gpu: "2"
+        memory: "16Gi"
 
 volumes:
   - name: results

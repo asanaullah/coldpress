@@ -21,4 +21,4 @@ coldpress = "coldpress.cli:cli"
 coldpress-setup = "coldpress_setup.cli:cli"
 
 [tool.hatch.build.targets.wheel]
-packages = ["coldpress", "coldpress_setup"]
+packages = ["coldpress", "coldpress_setup", "coldpress_common"]

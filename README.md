@@ -251,8 +251,11 @@ containers:
       - --nnodes=1
       - train.py
       - --dataset=mnist
+      - --train-test-split=0.8
       - --epochs=50
       - --batch-size=128
+      - --hidden-size=4096
+      - --lr=0.01
       - --output-dir=/results/checkpoints
     resources:
       requests:

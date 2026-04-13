@@ -419,7 +419,6 @@ coldpress generate --config examples/job/config.yaml --node 0 --node 1
 ```
 coldpress/
 ├── __init__.py
-├── allocator.py      # Node allocation logic
 ├── generator.py      # JobSet YAML generation
 ├── script_gen.py     # Bash script generation
 └── cli.py           # Main CLI
