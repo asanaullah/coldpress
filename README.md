@@ -31,27 +31,41 @@ The setup script uses `uv` (fast Python package installer) and will install it a
 
 ### 2. Configure Cluster (Admin)
 
-Apply cluster-wide configuration:
+Generate cluster-wide configuration manifests:
 ```bash
 coldpress-setup apply cluster ocp-test-nerc-mghpcc.yaml
+# Review the manifest
+cat manifests/cluster-*.yaml
+# Apply to cluster
+oc apply -f manifests/cluster-*.yaml
 ```
 
-Apply project configuration:
+Generate project configuration manifests:
 ```bash
 coldpress-setup apply project researcher-a.yaml
+# Review the manifest (check RBAC permissions)
+cat manifests/project-*.yaml
+# Apply to cluster
+oc apply -f manifests/project-*.yaml
 ```
 
 Grant user access (user must already exist in cluster auth system):
 ```bash
 coldpress-setup apply user coldpress-user.yaml
+# Review the manifest
+cat manifests/user-*.yaml
+# Apply to cluster
+oc apply -f manifests/user-*.yaml
 ```
 
 **Note:** 
+- `coldpress-setup` generates timestamped manifests to `manifests/` directory
+- Admin reviews manifests before applying (enables GitOps workflows)
 - Config files can be stored anywhere - the subcommand (`cluster`, `project`, `user`) specifies the type
 - User must already exist in the cluster's authentication system (OAuth, LDAP, etc.)
 - Project must be configured first (creates the Role that user RBAC references)
 
-This creates:
+These manifests create:
 - Kueue ResourceFlavors and ClusterQueue (with nodeLabel selectors)
 - Namespace with LocalQueue and PVC (500Gi)
 - Namespace labeled with `kueue.openshift.io/managed=true`
@@ -78,6 +92,30 @@ Creates `output/ddp-training-job/` with:
 - `monitor.sh` - Watch job status
 - `logs.sh` - Capture and save logs to PVC
 - `explore.sh` - Interactive shell to browse results
+
+**Node Scheduling:**
+
+Three ways to control node assignment (priority order):
+
+1. **CLI flag** (highest priority):
+   ```bash
+   coldpress generate --config job.yaml --node 0 --node 1
+   ```
+
+2. **Config file**:
+   ```yaml
+   # config.yaml
+   nodes:
+     - 0  # Task 0 → node 0
+     - 1  # Task 1 → node 1
+   ```
+
+3. **Kubernetes scheduler** (default):
+   - No `nodes` in config and no `--node` flag
+   - Scheduler selects any node with `coldpress.node` label
+   - Best for dynamic cluster utilization
+
+See `examples/pytorch_ddp_training_node1/` for explicit node assignment example.
 
 ### 4. Run Job
 
@@ -108,13 +146,15 @@ Cleanup (preserves results in PVC):
 
 ## Features
 
-- **GPU Allocation** - Automatic node selection based on GPU availability
+- **Flexible Node Scheduling** - Kubernetes scheduler selects any coldpress-labeled node, or pin to specific nodes with `--node`
+- **Per-Task Hardware Discovery** - Init containers capture actual node hardware for each task, placed in task-specific result directories
 - **Task Dependencies** - Endpoint and completion blocking for multi-task workflows
-- **Result Collection** - Organized storage in user PVCs with discovery snapshots
+- **Result Collection** - Organized storage in user PVCs with task-specific directories
 - **Log Capture** - Save pod logs to persistent storage
 - **File Injection** - Mount local files via ConfigMaps
 - **YAML Validation** - Pydantic-based schema validation catches errors before cluster operations
 - **Transparent Workflow** - All manifests and scripts generated locally for inspection
+- **No Cluster Access Required** - Generate manifests without kubectl/oc (only needed for applying)
 
 ## Complete Tutorial
 
@@ -162,21 +202,36 @@ coldpress/
 **Local development:**
 - Python 3.9+ (tested on Python 3.14)
 - `uv` (fast Python package installer - auto-installed by setup-env.sh)
-- **`kubectl` or `oc` CLI** (tested with oc 4.17.0, required for all cluster operations - must be installed separately)
+
+**For applying manifests to cluster:**
+- **`kubectl` or `oc` CLI** (tested with oc 4.17.0)
+  - Required only for applying generated manifests
+  - **NOT required** for generating manifests with `coldpress` or `coldpress-setup`
+  - Must be installed separately
 
 ## Environment Variables
 
 Customize directory locations with environment variables:
 
+**For `coldpress` (job generation):**
 - `COLDPRESS_DISCOVERY_DIR` - Discovery templates directory (default: `discovery`)
 - `COLDPRESS_PROJECT_DIR` - Project configs directory (default: `projects`)
 - `COLDPRESS_OUTPUT_DIR` - Default output directory (default: `output`)
+
+**For `coldpress-setup` (manifest generation):**
+- `COLDPRESS_MANIFESTS_DIR` - Manifest output directory (default: `manifests`)
+- `COLDPRESS_CLUSTER_DIR` - Cluster configs directory (default: `cluster`)
+- `COLDPRESS_USER_DIR` - User configs directory (default: `users`)
 
 **Example:**
 ```bash
 export COLDPRESS_OUTPUT_DIR=jobs
 coldpress generate --config examples/pytorch_ddp_training/config.yaml
 # Outputs to: jobs/ddp-training-job/ instead of output/ddp-training-job/
+
+export COLDPRESS_MANIFESTS_DIR=gitops/manifests
+coldpress-setup apply project researcher-a.yaml
+# Outputs to: gitops/manifests/project-researcher-a-*.yaml
 ```
 
 ## Example: PyTorch DDP Training
@@ -224,7 +279,14 @@ volumes:
 **Config** (examples/pytorch_ddp_training/config.yaml):
 ```yaml
 project: researcher-a
-discovery: user_snapshot
+
+# Discovery - runs as init container per task to capture actual node hardware
+discovery: user_snapshot  # Simple format
+# Or use detailed format:
+# discovery:
+#   template: user_snapshot
+#   tasks: all  # or [0, 1] for specific tasks
+
 output: ddp-training-job
 
 # Files to mount into container (creates ConfigMap)
@@ -243,13 +305,14 @@ cd output/ddp-training-job/
 **Results structure in PVC:**
 ```
 /data/researcher-a/coldpress_results/ddp-training-{uid}-{timestamp}/
-├── discovery_user_snapshot.json    # Hardware/benchmark data
-├── checkpoints/
-│   ├── model_weights.pth          # Trained model
-│   └── training_stats.json        # Training metrics
+├── task-0/
+│   ├── discovery_user_snapshot.json    # Hardware/benchmark data for task 0
+│   ├── checkpoints/
+│   │   ├── model_weights.pth          # Trained model
+│   │   └── training_stats.json        # Training metrics
 └── logs/
-    ├── {pod-name}.log             # Individual pod logs
-    └── combined.log               # Combined logs
+    ├── {pod-name}.log                  # Individual pod logs
+    └── combined.log                    # Combined logs
 ```
 
 ## Example: vLLM + GuideLLM Benchmark

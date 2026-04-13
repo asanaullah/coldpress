@@ -7,7 +7,6 @@ import os
 import json
 from datetime import datetime, timezone
 
-from .allocator import allocate_node
 from .generator import generate_jobset, jobset_to_yaml, services_to_yaml
 from .script_gen import write_scripts
 from coldpress_common import validate_config, validate_project_config, validate_task_specs
@@ -41,13 +40,30 @@ def _load_and_validate_config(
 
     config_dir = os.path.dirname(os.path.abspath(config_path))
     project = project_override or validated_config.project
-    discovery = discovery_override or validated_config.discovery
+
+    # Handle discovery - CLI override or config (could be string or DiscoveryConfig)
+    if discovery_override:
+        # CLI override is always a simple string, convert to DiscoveryConfig format
+        discovery = {"template": discovery_override, "tasks": "all"}
+    elif validated_config.discovery:
+        # From config file - already validated as DiscoveryConfig
+        if isinstance(validated_config.discovery, str):
+            discovery = {"template": validated_config.discovery, "tasks": "all"}
+        else:
+            discovery = {
+                "template": validated_config.discovery.template,
+                "tasks": validated_config.discovery.tasks,
+            }
+    else:
+        discovery = None
+
     output_name = output_override or validated_config.output
+    nodes_from_config = validated_config.nodes
 
     if not project:
         raise ValueError("Must provide --project or specify 'project' in config")
 
-    return config_data, config_dir, project, discovery, output_name
+    return config_data, config_dir, project, discovery, output_name, nodes_from_config
 
 
 def _load_task_specs(config_dir):
@@ -129,23 +145,15 @@ def _allocate_nodes_for_tasks(task_specs, manual_nodes):
     node_assignments = {}
 
     if manual_nodes:
+        # User provided explicit node assignments
         for task_id, node_id in enumerate(manual_nodes):
             if task_id < len(task_specs):
                 node_assignments[task_id] = node_id
         return node_assignments
 
-    for task_id, task in enumerate(task_specs):
-        req_gpus = sum(
-            int(
-                container.get("resources", {})
-                .get("requests", {})
-                .get("nvidia.com/gpu", "0")
-            )
-            for container in task.get("containers", [])
-        )
-        req_nics = task.get("roce_nics", 0)
-        allocated_node = allocate_node(req_gpus, req_nics)
-        node_assignments[task_id] = int(allocated_node)
+    # Default: let Kubernetes scheduler decide (use "any" coldpress node)
+    for task_id in range(len(task_specs)):
+        node_assignments[task_id] = "any"
 
     return node_assignments
 
@@ -274,7 +282,7 @@ def generate(config, project, discovery, output, node, file):
         coldpress generate -c my-workflow/config.yaml -o custom-output
     """
     try:
-        config_data, config_dir, project, discovery, output_name = (
+        config_data, config_dir, project, discovery, output_name, nodes_from_config = (
             _load_and_validate_config(config, project, discovery, output)
         )
         task_specs = _load_task_specs(config_dir)
@@ -291,14 +299,18 @@ def generate(config, project, discovery, output, node, file):
             "storage": project_config.get("storage", {}),
         }
 
-        # Add discovery template
+        # Add discovery configuration
         if discovery:
-            discovery_template_path = f"{DISCOVERY_DIR}/{discovery}.yaml"
+            template_name = discovery["template"]
+            discovery_template_path = f"{DISCOVERY_DIR}/{template_name}.yaml"
             if not os.path.exists(discovery_template_path):
                 raise FileNotFoundError(
                     f"Discovery template not found: {discovery_template_path}"
                 )
-            job_spec["discovery"] = {"template": discovery_template_path}
+            job_spec["discovery"] = {
+                "template": discovery_template_path,
+                "tasks": discovery["tasks"],
+            }
 
         # Prepare ConfigMap files
         files_list = list(config_data.get("files", [])) + list(file)
@@ -311,18 +323,32 @@ def generate(config, project, discovery, output, node, file):
         click.echo(f"Project: {project}")
         click.echo(f"Namespace: {namespace}")
         if discovery:
-            click.echo(f"Discovery: {discovery}")
+            tasks_info = discovery["tasks"]
+            if tasks_info == "all":
+                click.echo(f"Discovery: {discovery['template']} (all tasks)")
+            else:
+                click.echo(f"Discovery: {discovery['template']} (tasks: {tasks_info})")
         click.echo(f"Tasks: {len(task_specs)}")
 
-        # Allocate nodes
+        # Allocate nodes (priority: CLI --node > config nodes > default scheduler)
+        manual_nodes = None
         if node:
-            node_assignments = {i: n for i, n in enumerate(node) if i < len(task_specs)}
-            click.echo(f"Using manual node assignments: {node_assignments}")
+            # CLI --node flag takes precedence
+            manual_nodes = list(node)
+            click.echo(f"Using node assignments from CLI: {dict(enumerate(manual_nodes))}")
+        elif nodes_from_config:
+            # Use nodes from config file
+            manual_nodes = nodes_from_config
+            click.echo(f"Using node assignments from config: {dict(enumerate(manual_nodes))}")
         else:
-            click.echo("Allocating nodes based on cluster state...")
-            node_assignments = _allocate_nodes_for_tasks(task_specs, None)
+            # Default: let Kubernetes scheduler decide
+            click.echo("Node scheduling: Kubernetes will select any coldpress-labeled node")
+
+        node_assignments = _allocate_nodes_for_tasks(task_specs, manual_nodes)
+
+        # Display task info
+        if not manual_nodes:
             for task_id, task in enumerate(task_specs):
-                allocated_node = node_assignments[task_id]
                 req_gpus = sum(
                     int(
                         c.get("resources", {})
@@ -332,7 +358,7 @@ def generate(config, project, discovery, output, node, file):
                     for c in task.get("containers", [])
                 )
                 click.echo(
-                    f"  Task {task_id} ({task.get('name', f'task-{task_id}')}) → Node {allocated_node} (GPUs: {req_gpus})"
+                    f"  Task {task_id} ({task.get('name', f'task-{task_id}')}) - GPUs: {req_gpus} (scheduler will pick node)"
                 )
 
         # Generate JobSet

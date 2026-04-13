@@ -90,18 +90,29 @@ This section covers cluster-wide configuration tasks that require admin privileg
 - Admin access to Kubernetes/OpenShift cluster (tested on OpenShift 4.21.5, Kubernetes v1.34.4)
 - Kueue operator installed (tested with v0.11.6, API v1beta1)
 - JobSet operator installed (tested with v1.0.0, API v1alpha2)
-- **`kubectl` or `oc` CLI installed and configured** (tested with oc 4.17.0, required for all Coldpress operations)
-- **Optional:** Set `COLDPRESS_OC_FLAGS` environment variable for additional kubectl/oc flags (e.g., `export COLDPRESS_OC_FLAGS="--as system:admin"`)
+- **`kubectl` or `oc` CLI installed and configured** (tested with oc 4.17.0, required for applying manifests)
 
-## B1: Apply Cluster Configuration
+## B1: Generate and Apply Cluster Configuration
 
-**What:** Configure cluster-wide resources (ResourceFlavors, ClusterQueue).
+**What:** Generate manifests for cluster-wide resources (ResourceFlavors, ClusterQueue).
 
 **Why:** Sets up the Kueue queueing system for GPU allocation across the cluster.
 
-**Command:**
+**Step 1: Generate manifests**
 ```bash
 coldpress-setup apply cluster ocp-test-nerc-mghpcc.yaml
+```
+
+This generates a timestamped manifest file in `manifests/` directory (e.g., `manifests/cluster-ocp-test-nerc-mghpcc-20260413-153049.yaml`).
+
+**Step 2: Review the generated manifest**
+```bash
+cat manifests/cluster-ocp-test-nerc-mghpcc-*.yaml
+```
+
+**Step 3: Apply the manifest to the cluster**
+```bash
+oc apply -f manifests/cluster-ocp-test-nerc-mghpcc-*.yaml
 ```
 
 **This creates:**
@@ -146,15 +157,29 @@ oc get nodes --show-labels | grep coldpress.node
 
 ---
 
-## B2: Apply Project Configuration
+## B2: Generate and Apply Project Configuration
 
-**What:** Create a project namespace with storage and queueing resources.
+**What:** Generate manifests for a project namespace with storage and queueing resources.
 
 **Why:** Provides isolated workspace for a research group or project team.
 
-**Command:**
+**Step 1: Generate manifests**
 ```bash
 coldpress-setup apply project researcher-a.yaml
+```
+
+This generates a timestamped manifest file (e.g., `manifests/project-researcher-a-20260413-152928.yaml`).
+
+**Step 2: Review the generated manifest**
+```bash
+cat manifests/project-researcher-a-*.yaml
+```
+
+Review the RBAC permissions and resource allocations before applying.
+
+**Step 3: Apply the manifest to the cluster**
+```bash
+oc apply -f manifests/project-researcher-a-*.yaml
 ```
 
 **This creates:**
@@ -184,9 +209,9 @@ local-queue-researcher-a    cluster-queue-coldpress   5s
 
 ---
 
-## B3: Apply User RBAC
+## B3: Generate and Apply User RBAC
 
-**What:** Grant an existing cluster user permission to submit jobs to the project namespace.
+**What:** Generate manifests to grant an existing cluster user permission to submit jobs to the project namespace.
 
 **Why:** Allows regular users to create and manage JobSets without admin privileges.
 
@@ -194,16 +219,28 @@ local-queue-researcher-a    cluster-queue-coldpress   5s
 - User must already exist in the cluster's authentication system (OpenShift OAuth, LDAP, etc.)
 - Project configuration must be applied first (creates the Role that this RoleBinding references)
 
-**Command:**
+**Step 1: Generate manifests**
 ```bash
 coldpress-setup apply user coldpress-user.yaml
 ```
+
+This generates a timestamped manifest file (e.g., `manifests/user-coldpress-user-20260413-153047.yaml`).
 
 **User config example** (`users/coldpress-user.yaml`):
 ```yaml
 username: coldpress-user
 namespaces:
   - researcher-a
+```
+
+**Step 2: Review the generated manifest**
+```bash
+cat manifests/user-coldpress-user-*.yaml
+```
+
+**Step 3: Apply the manifest to the cluster**
+```bash
+oc apply -f manifests/user-coldpress-user-*.yaml
 ```
 
 **This creates:**
@@ -310,9 +347,8 @@ metadata:
     kueue.x-k8s.io/queue-name: local-queue-researcher-a
 spec:
   replicatedJobs:
-  - name: mkdir       # Job 1: Create results directory
-  - name: discovery   # Job 2: Hardware snapshot and benchmarking
-  - name: task-0      # Job 3: PyTorch DDP training (2 GPUs)
+  - name: mkdir       # Job 1: Create results directory and task subdirectories
+  - name: task-0      # Job 2: PyTorch DDP training (2 GPUs, with discovery init container)
 ```
 
 **Key configuration for task-0 (training job):**
@@ -321,7 +357,8 @@ spec:
 - Resources: 2 GPUs, 16Gi memory, 8 CPU cores
 - Command: `python -m torch.distributed.run --nproc_per_node=2 train.py`
 - Volumes: PVC for results, emptyDir for shared memory
-- Dependencies: Waits for discovery job to complete
+- Dependencies: Waits for mkdir job to complete
+- Init container: Runs discovery to capture node hardware before training starts
 
 ---
 
@@ -341,7 +378,7 @@ cd output/ddp-training-job
 1. JobSet is created in the cluster
 2. Kueue queues the job and waits for resources
 3. When GPUs are available, Kueue unsuspends the JobSet
-4. Jobs execute in order: mkdir → discovery → training
+4. Jobs execute in order: mkdir → training (with discovery init container)
 5. Script waits for all jobs to complete
 
 **You'll see:**
@@ -359,9 +396,9 @@ JobSet completed successfully!
 ```
 
 **Execution timeline (typical):**
-- mkdir: 5-10 seconds
-- discovery: 5-10 seconds  
-- training: 2-3 minutes (depends on workload)
+- mkdir: 5-10 seconds (creates base dir + task subdirectories)
+- task-0 init container (discovery): 5-10 seconds (runs before main container)
+- task-0 main container (training): 2-3 minutes (depends on workload)
 
 **Result:** Your job is now submitted and will execute when resources are available.
 
@@ -384,14 +421,13 @@ Monitoring JobSet: ddp-training
 
 NAMESPACE      NAME                              READY   AGE
 researcher-a   ddp-training-mkdir-0              1/1     15s
-researcher-a   ddp-training-discovery-0          1/1     20s
 researcher-a   ddp-training-task-0-0             0/1     25s
 
 Pods:
-NAME                              READY   STATUS    RESTARTS   AGE
-ddp-training-mkdir-0-0-abc123     0/1     Completed 0          15s
-ddp-training-discovery-0-0-def456 0/1     Completed 0          20s
-ddp-training-task-0-0-ghi789      1/1     Running   0          25s
+NAME                              READY   STATUS       RESTARTS   AGE
+ddp-training-mkdir-0-0-abc123     0/1     Completed    0          15s
+ddp-training-task-0-0-ghi789      0/1     Init:0/1     0          10s  # Discovery running
+ddp-training-task-0-0-ghi789      1/1     Running      0          25s  # Training started
 ```
 
 **Tip:** Press Ctrl+C to exit monitoring.
@@ -467,9 +503,16 @@ Training complete!
 ls -lh
 
 # Output:
+# task-0/
+# logs/
+
+# Navigate to task-0 directory
+cd task-0
+ls -lh
+
+# Output:
 # discovery_user_snapshot.json
 # checkpoints/
-# logs/
 
 # Check training stats
 cat checkpoints/training_stats.json
@@ -494,10 +537,11 @@ oc run check-results --rm -i --restart=Never \
 
 ```
 /data/researcher-a/coldpress_results/ddp-training-{uid}-{timestamp}/
-├── discovery_user_snapshot.json    # Hardware/benchmark data (2.7KB)
-├── checkpoints/
-│   ├── model_weights.pth          # Trained model (77MB)
-│   └── training_stats.json        # Training metrics (303 bytes)
+├── task-0/
+│   ├── discovery_user_snapshot.json    # Hardware/benchmark data (2.7KB)
+│   └── checkpoints/
+│       ├── model_weights.pth          # Trained model (77MB)
+│       └── training_stats.json        # Training metrics (303 bytes)
 └── logs/
     ├── ddp-training-task-0-0-ghi789.log  # Individual pod log (8.7KB)
     └── combined.log                      # Combined logs (8.8KB)
@@ -609,10 +653,11 @@ By following this guide, you will have:
 **Persistent storage structure:**
 ```
 /data/researcher-a/coldpress_results/ddp-training-{uid}-{timestamp}/
-├── discovery_user_snapshot.json    # Hardware/benchmark data
-├── checkpoints/
-│   ├── model_weights.pth          # Trained model (77MB)
-│   └── training_stats.json        # Training metrics
+├── task-0/
+│   ├── discovery_user_snapshot.json    # Hardware/benchmark data
+│   └── checkpoints/
+│       ├── model_weights.pth          # Trained model (77MB)
+│       └── training_stats.json        # Training metrics
 └── logs/
     ├── {pod-name}.log             # Individual pod logs
     └── combined.log               # Combined logs
@@ -622,9 +667,10 @@ By following this guide, you will have:
 
 - Cluster setup with Kueue queueing
 - GPU allocation and node selection
-- Job dependencies (mkdir → discovery → training)
+- Job dependencies (mkdir → tasks)
+- Per-task hardware discovery (init containers capture actual node hardware)
 - File injection via ConfigMap (train.py, model_config.json)
-- Hardware discovery and benchmarking
+- Task-specific result directories
 - Persistent result storage
 - Log capture to PVC
 - Clean resource cleanup

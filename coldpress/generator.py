@@ -90,33 +90,15 @@ def _substitute_dns_in_args(tasks, job_id, namespace):
             args[i] = arg
 
 
-def _build_init_jobs(base_dir, data_pvc_name, discovery_template, node_assignments):
-    """Build mkdir and optional discovery initialization jobs."""
+def _build_init_jobs(base_dir, data_pvc_name, num_tasks):
+    """Build mkdir initialization job."""
     jobs = []
-    previous_job_name = None
-    previous_blocking_type = None
 
     # Add mkdir job
-    mkdir_job = build_mkdir_job(base_dir, data_pvc_name, "")
+    mkdir_job = build_mkdir_job(base_dir, data_pvc_name, "", num_tasks)
     jobs.append(mkdir_job)
     previous_job_name = mkdir_job["name"]
     previous_blocking_type = "completion"
-
-    # Add discovery job if specified
-    if discovery_template:
-        discovery_job = build_discovery_job(
-            discovery_template,
-            base_dir,
-            data_pvc_name,
-            node_assignments.get(0, 0),
-        )
-        if discovery_job:
-            discovery_job["dependsOn"] = [
-                {"name": previous_job_name, "status": "Complete"}
-            ]
-            jobs.append(discovery_job)
-            previous_job_name = discovery_job["name"]
-            previous_blocking_type = "completion"
 
     return jobs, previous_job_name, previous_blocking_type
 
@@ -132,6 +114,8 @@ def _build_task_jobs(
     base_dir,
     previous_job_name,
     previous_blocking_type,
+    discovery_template,
+    discovery_task_indices,
 ):
     """Build replicated jobs for all tasks."""
     replicated_jobs = []
@@ -154,6 +138,16 @@ def _build_task_jobs(
             job_spec.get("configmap"),
             base_dir,
         )
+
+        # Add discovery init container if this task should run discovery
+        if task_id in discovery_task_indices and discovery_template:
+            init_container = build_discovery_init_container(
+                discovery_template, task_id, base_dir, data_pvc_name
+            )
+            if init_container:
+                if "initContainers" not in pod_spec["spec"]:
+                    pod_spec["spec"]["initContainers"] = []
+                pod_spec["spec"]["initContainers"].append(init_container)
 
         blocking_type = task.get("blocking", "completion")
         if blocking_type == "endpoint":
@@ -204,11 +198,20 @@ def generate_jobset(job_spec, node_assignments):
     namespace = job_spec["namespace"]
     tasks = job_spec.get("tasks", [])
     storage = job_spec.get("storage", {})
-    discovery_template = (
-        job_spec.get("discovery", {}).get("template")
-        if "discovery" in job_spec
-        else None
-    )
+
+    # Extract discovery configuration
+    discovery_config = job_spec.get("discovery", {})
+    discovery_template = discovery_config.get("template")
+    discovery_tasks = discovery_config.get("tasks", "all")
+
+    # Determine which task indices should run discovery
+    if discovery_template:
+        if discovery_tasks == "all":
+            discovery_task_indices = set(range(len(tasks)))
+        else:
+            discovery_task_indices = set(discovery_tasks)
+    else:
+        discovery_task_indices = set()
 
     data_pvc_name = storage.get("results", f"{namespace}-storage")
     model_pvc_name = storage.get("models", "coldpress-model-storage")
@@ -219,9 +222,9 @@ def generate_jobset(job_spec, node_assignments):
         _infer_blocking_type_and_health_check(task, task_id, job_id, namespace)
     _substitute_dns_in_args(tasks, job_id, namespace)
 
-    # Build init jobs
+    # Build init jobs (just mkdir, discovery now runs as init containers per task)
     init_jobs, previous_job_name, previous_blocking_type = _build_init_jobs(
-        base_dir, data_pvc_name, discovery_template, node_assignments
+        base_dir, data_pvc_name, len(tasks)
     )
 
     # Build task jobs
@@ -236,6 +239,8 @@ def generate_jobset(job_spec, node_assignments):
         base_dir,
         previous_job_name,
         previous_blocking_type,
+        discovery_template,
+        discovery_task_indices,
     )
 
     replicated_jobs = init_jobs + task_jobs
@@ -425,7 +430,7 @@ def _add_configmap_volume(volumes, container_spec, configmap_info):
         )
 
 
-def _add_task_volumes(volumes, container_spec, task, base_dir):
+def _add_task_volumes(volumes, container_spec, task, task_id, base_dir):
     """Add volumes from task.volumes array."""
     for vol in task.get("volumes", []):
         vol_name = vol.get("name")
@@ -442,11 +447,13 @@ def _add_task_volumes(volumes, container_spec, task, base_dir):
 
         if mount_path:
             if vol_name == "results":
+                # Mount results to task-specific subdirectory
+                task_subpath = f"{base_dir}/task-{task_id}" if base_dir else vol.get("subPath", "")
                 container_spec["volumeMounts"].append(
                     {
                         "name": "coldpress-data",
                         "mountPath": mount_path,
-                        "subPath": base_dir if base_dir else vol.get("subPath", ""),
+                        "subPath": task_subpath,
                     }
                 )
             else:
@@ -504,7 +511,7 @@ def build_pod_spec(
     ]
 
     _add_configmap_volume(volumes, container_spec, configmap_info)
-    _add_task_volumes(volumes, container_spec, task, base_dir)
+    _add_task_volumes(volumes, container_spec, task, task_id, base_dir)
     _add_sys_mounts(volumes, container_spec, task)
 
     pod_spec = {
@@ -516,12 +523,34 @@ def build_pod_spec(
             "annotations": task.get("annotations", {}),
         },
         "spec": {
-            "nodeSelector": {"coldpress.node": node_id},
             "restartPolicy": "Never",
             "volumes": volumes,
             "containers": [container_spec],
         },
     }
+
+    # Add node selection - either specific node or any coldpress node
+    if node_id is not None and node_id != "any":
+        # Pin to specific node
+        pod_spec["spec"]["nodeSelector"] = {"coldpress.node": node_id}
+    else:
+        # Let Kubernetes scheduler pick any node with coldpress.node label
+        pod_spec["spec"]["affinity"] = {
+            "nodeAffinity": {
+                "requiredDuringSchedulingIgnoredDuringExecution": {
+                    "nodeSelectorTerms": [
+                        {
+                            "matchExpressions": [
+                                {
+                                    "key": "coldpress.node",
+                                    "operator": "Exists",
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        }
 
     _apply_pod_options(pod_spec, task, container_spec)
 
@@ -560,18 +589,80 @@ def create_service(task, task_id, job_id, namespace):
         return None
 
 
-def build_mkdir_job(base_dir, data_pvc_name, namespace):
+def build_discovery_init_container(template_path, task_id, base_dir, data_pvc_name):
     """
-    Build mkdir init job to create base directory.
+    Build discovery init container from template.
+
+    Args:
+        template_path: Path to discovery template YAML
+        task_id: Task ID for result path
+        base_dir: Base directory path
+        data_pvc_name: PVC name
+
+    Returns:
+        dict: Init container spec, or None if template not found
+    """
+    try:
+        # Read discovery template
+        with open(template_path, "r") as f:
+            template = yaml.safe_load(f)
+
+        # Extract Pod spec
+        pod_spec = template.get("spec", {})
+        containers = pod_spec.get("containers", [])
+
+        if not containers:
+            return None
+
+        # Get template name from filename
+        template_name = (
+            os.path.basename(template_path).replace(".yaml", "").replace(".yml", "")
+        )
+
+        # Copy container and modify for init container use
+        container = containers[0].copy()
+        container["name"] = "discovery"
+
+        # Task-specific output path
+        task_result_path = f"{base_dir}/task-{task_id}"
+
+        # Update volume mounts to use PVC with task-specific path
+        container["volumeMounts"] = [
+            {"name": "coldpress-data", "mountPath": "/tmp/result", "subPath": task_result_path}
+        ]
+
+        # Add rename command to output discovery_{template_name}.json
+        original_command = (
+            container.get("args", [""])[0] if container.get("args") else ""
+        )
+        rename_cmd = f"\nif [ -f /tmp/result/discovery.json ]; then mv /tmp/result/discovery.json /tmp/result/discovery_{template_name}.json; fi"
+
+        if container.get("args"):
+            container["args"] = [original_command + rename_cmd]
+
+        return container
+    except Exception as e:
+        print(f"Warning: Could not load discovery template {template_path}: {e}")
+        return None
+
+
+def build_mkdir_job(base_dir, data_pvc_name, namespace, num_tasks):
+    """
+    Build mkdir init job to create base directory and task subdirectories.
 
     Args:
         base_dir: Base directory path
         data_pvc_name: PVC name
         namespace: Kubernetes namespace
+        num_tasks: Number of tasks (to create task-N directories)
 
     Returns:
         dict: ReplicatedJob for mkdir
     """
+    # Build command to create base dir and all task subdirectories
+    task_dirs = " ".join([f"/data/{base_dir}/task-{i}" for i in range(num_tasks)])
+    mkdir_cmd = f"mkdir -p /data/{base_dir} {task_dirs} && echo Created directory /data/{base_dir} with {num_tasks} task subdirectories"
+
     return {
         "name": "mkdir",
         "replicas": 1,
@@ -588,11 +679,7 @@ def build_mkdir_job(base_dir, data_pvc_name, namespace):
                             {
                                 "name": "mkdir",
                                 "image": "registry.access.redhat.com/ubi9/ubi-minimal:latest",
-                                "command": [
-                                    "sh",
-                                    "-c",
-                                    f"mkdir -p /data/{base_dir} && echo Created directory /data/{base_dir}",
-                                ],
+                                "command": ["sh", "-c", mkdir_cmd],
                                 "volumeMounts": [
                                     {"name": "storage", "mountPath": "/data"}
                                 ],
@@ -658,6 +745,42 @@ def build_discovery_job(template_path, base_dir, data_pvc_name, node_id):
         if container.get("args"):
             container["args"] = [original_command + rename_cmd]
 
+        # Build pod spec with node selection
+        pod_spec = {
+            "restartPolicy": "Never",
+            "containers": [container],
+            "volumes": [
+                {
+                    "name": "storage",
+                    "persistentVolumeClaim": {"claimName": data_pvc_name},
+                }
+            ],
+            "tolerations": [{"operator": "Exists"}],
+        }
+
+        # Add node selection - either specific node or any coldpress node
+        if node_id is not None and node_id != "any":
+            # Pin to specific node
+            pod_spec["nodeSelector"] = {"coldpress.node": str(node_id)}
+        else:
+            # Let Kubernetes scheduler pick any node with coldpress.node label
+            pod_spec["affinity"] = {
+                "nodeAffinity": {
+                    "requiredDuringSchedulingIgnoredDuringExecution": {
+                        "nodeSelectorTerms": [
+                            {
+                                "matchExpressions": [
+                                    {
+                                        "key": "coldpress.node",
+                                        "operator": "Exists",
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+
         return {
             "name": "discovery",
             "replicas": 1,
@@ -668,20 +791,7 @@ def build_discovery_job(template_path, base_dir, data_pvc_name, node_id):
                     "backoffLimit": 0,
                     "template": {
                         "metadata": {"labels": {"app": "discovery"}},
-                        "spec": {
-                            "restartPolicy": "Never",
-                            "nodeSelector": {"coldpress.node": str(node_id)},
-                            "containers": [container],
-                            "volumes": [
-                                {
-                                    "name": "storage",
-                                    "persistentVolumeClaim": {
-                                        "claimName": data_pvc_name
-                                    },
-                                }
-                            ],
-                            "tolerations": [{"operator": "Exists"}],
-                        },
+                        "spec": pod_spec,
                     },
                 }
             },

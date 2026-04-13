@@ -31,9 +31,25 @@ Each workload directory contains:
 **config.yaml:**
 ```yaml
 project: researcher-a      # Project config (projects/researcher-a.yaml)
-discovery: user_snapshot   # Discovery template (discovery/user_snapshot.yaml)
+
+# Discovery - runs as init container per task to capture actual node hardware
+discovery: user_snapshot   # Simple format (all tasks, backward compatible)
+
+# Or use detailed format to control which tasks run discovery:
+# discovery:
+#   template: user_snapshot
+#   tasks: all              # 'all' or list like [0, 1, 2]
+
 output: ddp-training-job   # Output directory
 ```
+
+**Discovery Configuration:**
+- **Simple format**: `discovery: user_snapshot` - Runs discovery for all tasks
+- **Detailed format**: Specify which tasks run discovery:
+  - `tasks: all` - All tasks run discovery (default)
+  - `tasks: [0, 2]` - Only tasks 0 and 2 run discovery
+- **Per-task execution**: Discovery runs as init container, capturing hardware of the actual node where each task executes
+- **Results location**: `{base_dir}/task-{N}/discovery_{template}.json`
 
 **Environment Variables:**
 - `COLDPRESS_PROJECT_DIR` - Project configs directory (default: `projects`)

@@ -196,13 +196,44 @@ class TaskSpec(BaseModel):
 # === Config Models ===
 
 
+class DiscoveryConfig(BaseModel):
+    """Discovery configuration - can be string or dict."""
+
+    template: str
+    tasks: Optional[Union[str, list[int]]] = "all"  # "all" or list of task indices
+
+    @field_validator("tasks", mode="before")
+    @classmethod
+    def parse_tasks(cls, v):
+        """Parse tasks field - accept 'all', list of ints, or single int."""
+        if v is None:
+            return "all"
+        if isinstance(v, str):
+            return v.lower()
+        if isinstance(v, int):
+            return [v]
+        return v
+
+
 class WorkloadConfig(BaseModel):
     """Main config.yaml schema."""
 
     project: Optional[str] = None
-    discovery: Optional[str] = None
+    discovery: Optional[Union[str, DiscoveryConfig]] = None
     output: Optional[str] = None
     files: Optional[list[str]] = None
+    nodes: Optional[list[int]] = None  # Explicit node assignments for tasks
+
+    @field_validator("discovery", mode="before")
+    @classmethod
+    def parse_discovery(cls, v):
+        """Parse discovery field - accept string or dict."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            # Convert simple string to DiscoveryConfig
+            return {"template": v, "tasks": "all"}
+        return v
 
     @model_validator(mode="after")
     def validate_has_project(self):

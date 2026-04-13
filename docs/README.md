@@ -102,9 +102,9 @@ Cleanup:
 
 ### Config
 ```bash
-coldpress-setup apply cluster cluster-config.yaml              # Apply config
-coldpress-setup apply cluster cluster-config.yaml --dry-run    # Test only
-coldpress-setup apply cluster cluster-config.yaml -o out.yaml  # Generate to file
+coldpress-setup apply cluster cluster-config.yaml                    # Generate manifest to manifests/
+coldpress-setup apply cluster cluster-config.yaml -o /path/to/dir    # Generate to custom directory
+oc apply -f manifests/cluster-*.yaml                                  # Apply generated manifest
 ```
 
 ### Generate
@@ -239,11 +239,14 @@ coldpress-setup apply cluster cluster-config.yaml
 # coldpress-setup apply project <any-path>/project.yaml
 # coldpress-setup apply user <any-path>/user.yaml
 
-# Or generate manifests to file
-coldpress-setup apply cluster cluster-config.yaml -o manifests.yaml
+# Or generate manifests to custom directory
+coldpress-setup apply cluster cluster-config.yaml -o /path/to/manifests
 
-# Dry run
-coldpress-setup apply cluster cluster-config.yaml --dry-run
+# Review generated manifests
+cat manifests/cluster-*.yaml
+
+# Apply manifests to cluster
+oc apply -f manifests/cluster-*.yaml
 ```
 
 **Verify:**

@@ -24,7 +24,7 @@ Both `coldpress` and `coldpress-setup` tools validate YAML files automatically:
 1. **Project config validation** - Validates namespace, storage, cluster_queue
 2. **User config validation** - Validates username and namespaces list
 
-If validation fails, you'll get clear error messages indicating exactly what's wrong and the operation will be aborted before applying to the cluster.
+If validation fails, you'll get clear error messages indicating exactly what's wrong and the manifest generation will be aborted.
 
 ## Example Error Messages
 
@@ -97,6 +97,7 @@ except ValidationError as e:
 - ✓ discovery (optional)
 - ✓ output (optional)
 - ✓ files (optional list of strings)
+- ✓ nodes (optional list of integers) - explicit node assignments for tasks
 
 ### Task Spec (`job-spec.yaml`)
 **Required:**
