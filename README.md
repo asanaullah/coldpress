@@ -1,7 +1,7 @@
 <!-- Assisted by: Claude Sonnet 4.5 -->
 # Coldpress
 
-Coldpress is a prescriptive manifest generator that reduces the effort and expertise needed to deploy complex AI/HPC workloads on Kubernetes clusters. It generates JobSet manifests and helper scripts from simple job specifications.
+Coldpress is a prescriptive manifest generator that reduces the effort and expertise needed to deploy complex AI/HPC workloads on Kubernetes clusters.
 
 **Two-piece architecture:**
 
