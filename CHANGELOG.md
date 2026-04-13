@@ -5,6 +5,8 @@ All notable changes to Coldpress will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Timestamped node labeling scripts** - Node labeling scripts now include timestamps in filename (e.g., `label-nodes-cluster-20260413-152928.sh`) for consistency with manifests
+
 - **Per-task hardware discovery** - Discovery now runs as init container for each task instead of a separate job
   - Captures hardware info on the actual node where each task executes (not a different node)
   - Discovery results placed in task-specific directories: `{base_dir}/task-{task_id}/discovery_{template}.json`

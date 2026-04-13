@@ -25,12 +25,12 @@ coldpress-setup generate cluster ocp-test-nerc-mghpcc.yaml
 
 This generates:
 - `manifests/cluster-ocp-test-nerc-mghpcc-<timestamp>.yaml` - Kubernetes manifests
-- `manifests/label-nodes-ocp-test-nerc-mghpcc.sh` - Node labeling script
+- `manifests/label-nodes-ocp-test-nerc-mghpcc-<timestamp>.sh` - Node labeling script
 
 **Step 1b: Review the generated manifests**
 ```bash
 cat manifests/cluster-ocp-test-nerc-mghpcc-*.yaml
-cat manifests/label-nodes-ocp-test-nerc-mghpcc.sh
+cat manifests/label-nodes-ocp-test-nerc-mghpcc-*.sh
 ```
 
 **Step 1c: Run the labeling script**
@@ -38,7 +38,7 @@ cat manifests/label-nodes-ocp-test-nerc-mghpcc.sh
 Coldpress uses node labels for scheduling jobs to specific GPU nodes.
 
 ```bash
-./manifests/label-nodes-ocp-test-nerc-mghpcc.sh
+./manifests/label-nodes-ocp-test-nerc-mghpcc-*.sh
 ```
 
 **Step 1d: Apply the manifest to the cluster**

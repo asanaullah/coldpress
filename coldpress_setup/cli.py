@@ -240,8 +240,11 @@ def generate_cluster_config(config_file, output_dir):
     # Generate node labeling script if nodes were found
     label_script_path = None
     if nodes:
+        # Use same timestamp as manifest for consistency
+        config_basename = os.path.splitext(os.path.basename(config_file))[0]
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         label_script_path = os.path.join(
-            output_dir, f"label-nodes-{os.path.splitext(os.path.basename(config_file))[0]}.sh"
+            output_dir, f"label-nodes-{config_basename}-{timestamp}.sh"
         )
         with open(label_script_path, "w") as f:
             f.write("#!/bin/bash\n")
