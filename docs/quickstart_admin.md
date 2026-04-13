@@ -92,46 +92,46 @@ The cluster configuration's `nodes` section specifies which nodes should be labe
 
 **Step 2a: Generate manifests**
 ```bash
-coldpress-setup generate project researcher-a.yaml
+coldpress-setup generate project coldpress-project.yaml
 ```
 
-This generates a timestamped manifest file (e.g., `manifests/project-researcher-a-20260413-152928.yaml`).
+This generates a timestamped manifest file (e.g., `manifests/project-coldpress-project-20260413-152928.yaml`).
 
 **Step 2b: Review the generated manifest**
 ```bash
-cat manifests/project-researcher-a-*.yaml
+cat manifests/project-coldpress-project-*.yaml
 ```
 
 Review the RBAC permissions and resource allocations before applying.
 
 **Step 2c: Apply the manifest to the cluster**
 ```bash
-oc apply -f manifests/project-researcher-a-*.yaml
+oc apply -f manifests/project-coldpress-project-*.yaml
 ```
 
 **This creates:**
-- Namespace: `researcher-a`
-- LocalQueue: `local-queue-researcher-a` (connects to ClusterQueue)
-- PersistentVolumeClaim: `researcher-a-storage` (500Gi)
+- Namespace: `coldpress-project`
+- LocalQueue: `coldpress-local-queue-coldpress-project` (connects to ClusterQueue)
+- PersistentVolumeClaim: `coldpress-project-storage` (500Gi)
 - RBAC: ServiceAccount, Role, RoleBinding for job execution
 
 **Verification:**
 ```bash
-oc get namespace researcher-a
-oc get pvc -n researcher-a
-oc get localqueues -n researcher-a
+oc get namespace coldpress-project
+oc get pvc -n coldpress-project
+oc get localqueues -n coldpress-project
 ```
 
 **You should see:**
 ```
 NAME           STATUS   AGE
-researcher-a   Active   5s
+coldpress-project   Active   5s
 
 NAME                    STATUS   VOLUME   CAPACITY   ACCESS MODES   AGE
-researcher-a-storage    Bound    pvc-...  500Gi      RWX            5s
+coldpress-project-storage    Bound    pvc-...  500Gi      RWX            5s
 
-NAME                        CLUSTERQUEUE              AGE
-local-queue-researcher-a    cluster-queue-coldpress   5s
+NAME                                    CLUSTERQUEUE              AGE
+coldpress-local-queue-coldpress-project cluster-queue-coldpress   5s
 ```
 
 ---
@@ -157,7 +157,7 @@ This generates a timestamped manifest file (e.g., `manifests/user-coldpress-user
 ```yaml
 username: coldpress-user
 namespaces:
-  - researcher-a
+  - coldpress-project
 ```
 
 **Step 3b: Review the generated manifest**
@@ -171,7 +171,7 @@ oc apply -f manifests/user-coldpress-user-*.yaml
 ```
 
 **This creates:**
-- RoleBinding: `coldpress-user-coldpress-user` in namespace `researcher-a`
+- RoleBinding: `coldpress-user-coldpress-user` in namespace `coldpress-project`
 - Binds existing user to existing Role: `coldpress-user-role` (created by project setup)
 - Grants permissions: create/manage JobSets, view Jobs/Pods/Services
 
@@ -179,7 +179,7 @@ oc apply -f manifests/user-coldpress-user-*.yaml
 
 **Verification:**
 ```bash
-oc get rolebindings -n researcher-a | grep coldpress-user
+oc get rolebindings -n coldpress-project | grep coldpress-user
 ```
 
 **Expected output:**

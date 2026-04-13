@@ -66,7 +66,7 @@ Discovery templates are Pod specs that get stitched into JobSets by the coldpres
 
 ```yaml
 name: my-job
-namespace: researcher-a
+namespace: coldpress-project
 
 discovery:
   template: discovery_templates/user_snapshot.yaml

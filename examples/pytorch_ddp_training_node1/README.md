@@ -18,7 +18,7 @@ This example demonstrates running a PyTorch Distributed Data Parallel (DDP) trai
 
 ```yaml
 # config.yaml
-project: researcher-a
+project: coldpress-project
 
 # Per-task discovery - runs on the actual node where task executes
 discovery:
@@ -46,7 +46,7 @@ This example uses **per-task discovery**, which runs hardware discovery as an in
 
 **Results structure:**
 ```
-/data/researcher-a/coldpress_results/ddp-training-job-{uid}-{timestamp}/
+/data/coldpress-project/coldpress_results/ddp-training-job-{uid}-{timestamp}/
 ├── task-0/
 │   └── discovery_user_snapshot.json    # Hardware info for task 0
 └── logs/
@@ -111,7 +111,7 @@ For workflows with multiple tasks on different nodes, you can specify in config.
 
 ```yaml
 # config.yaml for multi-task workflow
-project: researcher-a
+project: coldpress-project
 output: multi-task-job
 
 nodes:

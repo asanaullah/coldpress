@@ -49,7 +49,7 @@ def _generate_manifest_filename(subcommand, config_file):
     """Generate timestamped manifest filename.
 
     Format: {subcommand}-{config-basename}-{timestamp}.yaml
-    Example: project-researcher-a-20260413-143022.yaml
+    Example: project-coldpress-project-20260413-143022.yaml
     """
     # Extract basename without extension
     config_basename = os.path.splitext(os.path.basename(config_file))[0]
@@ -108,9 +108,9 @@ def cluster(config_file, output_dir):
     config_file = _resolve_config_path(config_file, "cluster")
     if not os.path.exists(config_file):
         click.echo(f"Error: Config file not found: {config_file}", err=True)
-        return 1
+        raise SystemExit(1)
 
-    return generate_cluster_config(config_file, output_dir)
+    raise SystemExit(generate_cluster_config(config_file, output_dir))
 
 
 @generate.command()
@@ -131,14 +131,14 @@ def project(config_file, output_dir):
     The manifests are written to the output directory. The admin is responsible for applying them.
 
     Examples:
-        coldpress-setup generate project researcher-a.yaml
-        coldpress-setup generate project researcher-a.yaml --output-dir /path/to/manifests
+        coldpress-setup generate project coldpress-project.yaml
+        coldpress-setup generate project coldpress-project.yaml --output-dir /path/to/manifests
     """
     # Resolve config file path
     config_file = _resolve_config_path(config_file, "project")
     if not os.path.exists(config_file):
         click.echo(f"Error: Config file not found: {config_file}", err=True)
-        return 1
+        raise SystemExit(1)
 
     # Load and validate project config
     with open(config_file, "r") as f:
@@ -150,9 +150,9 @@ def project(config_file, output_dir):
         config = config_data
     except ValidationError as e:
         click.echo(f"Error: Project config validation failed:\n{e}", err=True)
-        return 1
+        raise SystemExit(1)
 
-    return generate_project_config(config, config_file, output_dir)
+    raise SystemExit(generate_project_config(config, config_file, output_dir))
 
 
 @generate.command()
@@ -180,7 +180,7 @@ def user(config_file, output_dir):
     config_file = _resolve_config_path(config_file, "user")
     if not os.path.exists(config_file):
         click.echo(f"Error: Config file not found: {config_file}", err=True)
-        return 1
+        raise SystemExit(1)
 
     # Load and validate user config
     with open(config_file, "r") as f:
@@ -192,9 +192,9 @@ def user(config_file, output_dir):
         config = config_data
     except ValidationError as e:
         click.echo(f"Error: User config validation failed:\n{e}", err=True)
-        return 1
+        raise SystemExit(1)
 
-    return generate_user_config(config, config_file, output_dir)
+    raise SystemExit(generate_user_config(config, config_file, output_dir))
 
 
 def generate_cluster_config(config_file, output_dir):
@@ -407,4 +407,5 @@ def generate_user_config(config, config_file, output_dir):
 
 
 if __name__ == "__main__":
-    cli()
+    import sys
+    sys.exit(cli())

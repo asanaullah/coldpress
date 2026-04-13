@@ -124,7 +124,7 @@ def _prepare_configmap_files(config_dir, files_list, job_name):
     if not files_list:
         return None
 
-    configmap_name = f"{job_name}-files"
+    configmap_name = f"coldpress-{job_name}-files"
     file_data = {}
     for file_name in files_list:
         file_path = os.path.join(config_dir, file_name)
@@ -214,11 +214,11 @@ def _write_output_files(
 
     # Generate bash scripts
     storage_pvc = job_spec.get("storage", {}).get(
-        "results", f"{job_spec['namespace']}-storage"
+        "results", f"coldpress-{job_spec['namespace']}-storage"
     )
     write_scripts(
         output_dir,
-        job_spec["name"],
+        f"coldpress-{job_spec['name']}",
         job_spec["namespace"],
         storage_pvc,
         base_dir,
@@ -387,18 +387,19 @@ def generate(config, project, discovery, output, node, file):
         click.echo("\nTo cleanup:")
         click.echo("  ./cleanup.sh")
 
-        return 0
+        raise SystemExit(0)
 
     except (ValueError, FileNotFoundError) as e:
         click.echo(f"Error: {e}", err=True)
-        return 1
+        raise SystemExit(1)
     except Exception as e:
         click.echo(f"Error generating JobSet: {e}", err=True)
         import traceback
 
         traceback.print_exc()
-        return 1
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
-    cli()
+    import sys
+    sys.exit(cli())

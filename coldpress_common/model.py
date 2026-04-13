@@ -142,6 +142,12 @@ class TaskSpec(BaseModel):
     name: str
     containers: list[ContainerSpec]
 
+    @field_validator("name")
+    @classmethod
+    def validate_task_name(cls, v):
+        """Validate task name is a valid Kubernetes resource name."""
+        return validate_kubernetes_name(v, max_length=63)
+
     # Legacy flat format support
     image: Optional[str] = None
     command: Optional[Union[str, list[str]]] = None
@@ -281,6 +287,12 @@ class ProjectConfig(BaseModel):
     storage_class: Optional[str] = None
     storage: Optional[StorageConfig] = None
 
+    @field_validator("namespace")
+    @classmethod
+    def validate_namespace_name(cls, v):
+        """Validate namespace is a valid Kubernetes name."""
+        return validate_kubernetes_name(v, max_length=63)
+
     @field_validator("storage", mode="before")
     @classmethod
     def ensure_storage_exists(cls, v):
@@ -298,12 +310,20 @@ class UserConfig(BaseModel):
     username: str
     namespaces: list[str]
 
+    @field_validator("username")
+    @classmethod
+    def validate_username_format(cls, v):
+        """Validate username is a valid Kubernetes name."""
+        return validate_kubernetes_name(v, max_length=63)
+
     @field_validator("namespaces")
     @classmethod
-    def ensure_namespaces_not_empty(cls, v):
-        """Ensure namespaces list is not empty."""
+    def validate_namespaces_format(cls, v):
+        """Validate all namespaces are valid Kubernetes names."""
         if not v:
             raise ValueError("User config must include at least one namespace")
+        for ns in v:
+            validate_kubernetes_name(ns, max_length=63)
         return v
 
 
@@ -319,6 +339,45 @@ class JobSpec(BaseModel):
 
 
 # === Validation Functions ===
+
+
+def validate_kubernetes_name(name: str, max_length: int = 253) -> str:
+    """
+    Validate that a string is a valid Kubernetes resource name.
+
+    Kubernetes naming rules:
+    - Contains only lowercase alphanumeric characters, '-', and '.'
+    - Starts and ends with an alphanumeric character
+    - Length <= max_length (253 for most resources, 63 for labels/DNS)
+
+    Args:
+        name: Name to validate
+        max_length: Maximum length (default: 253)
+
+    Returns:
+        The validated name
+
+    Raises:
+        ValueError: If the name is invalid
+    """
+    import re
+
+    if not name:
+        raise ValueError("Resource name cannot be empty")
+
+    if len(name) > max_length:
+        raise ValueError(
+            f"Resource name '{name}' is too long ({len(name)} chars, max {max_length})"
+        )
+
+    # Must be lowercase alphanumeric, '-', or '.'
+    if not re.match(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$", name):
+        raise ValueError(
+            f"Resource name '{name}' is invalid. Must contain only lowercase "
+            "alphanumeric characters, '-', and '.', and start/end with alphanumeric."
+        )
+
+    return name
 
 
 def validate_config(config_data: dict) -> WorkloadConfig:

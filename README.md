@@ -1,6 +1,8 @@
 <!-- Assisted by: Claude Sonnet 4.5 -->
 # Coldpress
 
+[![Tests](https://github.com/asanaullah/coldpress/workflows/Tests/badge.svg?branch=v0.2)](https://github.com/asanaullah/coldpress/actions/workflows/tests.yml)
+
 Coldpress is a prescriptive manifest generator that reduces the effort and expertise needed to deploy complex AI/HPC workloads on Kubernetes clusters.
 
 **Two-piece architecture:**
@@ -129,6 +131,18 @@ This workflow is repeatable for each job you want to run.
 
 ## Documentation
 
+- **[Resource Labels](docs/LABELS.md)** - Query and manage Coldpress resources using standard Kubernetes labels
+  - Find all Coldpress-managed resources: `kubectl get all -A -l app.kubernetes.io/managed-by=coldpress`
+  - Delete resources by job: `kubectl delete all -n namespace -l coldpress.io/job-id=job-name`
+- **[Error Handling](docs/ERROR_HANDLING.md)** - Exit codes, exception handling, and debugging
+  - Exit code 0: Success, 1: Application errors, 2: Usage errors
+  - Specific exception types with clear error messages
+  - Pydantic validation catches configuration errors early
+- **Security** - Input validation and injection prevention
+  - Kubernetes naming rules enforced (lowercase alphanumeric, dashes, dots)
+  - JSON constructed safely with `json.dumps()` (no f-string injection)
+  - No hardcoded temp files (timestamped outputs instead)
+
 ## Quickstart Guides
 
 - **[Admin Quickstart](docs/quickstart_admin.md)** - Cluster setup for administrators (one-time)
@@ -142,6 +156,14 @@ coldpress/
 ├── coldpress/              # CLI: Job manifest generator
 ├── coldpress_setup/        # CLI: Cluster setup and configuration
 ├── coldpress_common/       # Shared validation models (Pydantic)
+├── tests/                  # Comprehensive test suite
+│   ├── test_validation.py  # Pydantic model validation tests
+│   ├── test_labels.py      # Resource labeling tests
+│   ├── test_security.py    # Security and input validation tests
+│   ├── test_error_handling.py  # Error handling tests
+│   ├── test_roce_disabled.py   # RoCE NIC disabled tests
+│   ├── test_exit_codes.sh  # Shell exit code tests
+│   └── run_all_tests.sh    # Run full test suite
 ├── discovery/              # Hardware discovery pod templates
 ├── projects/               # Example project configs (namespace, storage)
 ├── examples/               # Example workloads (config.yaml + job-spec.yaml)
@@ -152,6 +174,34 @@ coldpress/
 ├── setup.py                # Package setup (legacy, for backward compatibility)
 └── setup-env.sh            # Environment setup script
 ```
+
+## Testing
+
+Coldpress includes a comprehensive test suite that validates all fixes for [GitHub issue #37](https://github.com/asanaullah/coldpress/issues/37).
+
+### Run All Tests
+
+```bash
+# From repository root
+./tests/run_all_tests.sh
+```
+
+### Run Individual Tests
+
+```bash
+python tests/test_validation.py    # Pydantic model validation
+python tests/test_labels.py        # Resource labels
+python tests/test_security.py      # Security & input validation
+python tests/test_error_handling.py # Error handling & exit codes
+python tests/test_roce_disabled.py  # RoCE NIC disabled
+bash tests/test_exit_codes.sh      # Shell exit codes
+```
+
+### CI/CD
+
+Tests run automatically on every push and pull request via GitHub Actions. The workflow tests on Python 3.9, 3.10, 3.11, and 3.12.
+
+See `tests/README.md` for detailed test documentation.
 
 ## Requirements
 
@@ -187,13 +237,16 @@ coldpress generate --config examples/pytorch_ddp_training/config.yaml
 # Outputs to: jobs/ddp-training-job/ instead of output/ddp-training-job/
 
 export COLDPRESS_MANIFESTS_DIR=gitops/manifests
-coldpress-setup generate project researcher-a.yaml
-# Outputs to: gitops/manifests/project-researcher-a-*.yaml
+coldpress-setup generate project coldpress-project.yaml
+# Outputs to: gitops/manifests/project-coldpress-project-*.yaml
 ```
 
 ## Example: PyTorch DDP Training
 
 **Job spec** (examples/pytorch_ddp_training/job-spec.yaml):
+
+Note: This generates a JobSet named `coldpress-ddp-training` in the cluster.
+
 ```yaml
 name: ddp-training
 tolerate_all: true
@@ -238,7 +291,7 @@ volumes:
 
 **Config** (examples/pytorch_ddp_training/config.yaml):
 ```yaml
-project: researcher-a
+project: coldpress-project
 
 # Discovery - runs as init container per task to capture actual node hardware
 discovery: user_snapshot  # Simple format
@@ -264,7 +317,7 @@ cd output/ddp-training-job/
 
 **Results structure in PVC:**
 ```
-/data/researcher-a/coldpress_results/ddp-training-{uid}-{timestamp}/
+/data/coldpress-project/coldpress_results/ddp-training-{uid}-{timestamp}/
 ├── task-0/
 │   ├── discovery_user_snapshot.json    # Hardware/benchmark data for task 0
 │   ├── checkpoints/

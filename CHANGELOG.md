@@ -5,6 +5,40 @@ All notable changes to Coldpress will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Comprehensive test suite with CI/CD** - Automated testing on every commit
+  - Organized all tests in `tests/` directory
+  - Created `tests/run_all_tests.sh` to run full test suite locally
+  - GitHub Actions workflow runs tests on Python 3.9, 3.10, 3.11, 3.12 (also verified on 3.14)
+  - Tests cover: validation, labels, security, error handling, RoCE disabled, namespace consistency
+  - All tests pass on multiple Python versions
+  - Validates fixes for GitHub issue #37
+
+- **Security and input validation improvements** - Prevent injection attacks and validate user input
+  - JSON construction now uses `json.dumps()` instead of f-strings in `generate_sriov_network_attachments()` 
+  - Added `validate_kubernetes_name()` function to validate resource names against Kubernetes spec
+  - Pydantic validators now enforce Kubernetes naming rules (lowercase, alphanumeric, dashes, dots only)
+  - Task names, namespace names, and usernames validated at load time
+  - Prevents injection attacks via malformed resource names
+  - No hardcoded temp file paths (timestamped manifests used instead)
+  - Resolves GitHub issue #37 (Security and Reliability Issues)
+
+- **Improved error handling** - More specific exception handling and proper exit code propagation
+  - Replaced overly broad `except Exception` with specific exception types (FileNotFoundError, yaml.YAMLError, KeyError, etc.)
+  - CLI commands now properly propagate exit codes to shell using `raise SystemExit(code)`
+  - Exit code 0: Success, 1: Application errors, 2: Usage/validation errors
+  - Discovery template loading errors provide specific error messages
+  - Service creation errors are logged with details
+  - Resolves GitHub issue #37 (Error Handling)
+
+- **Standard resource labels** - All generated resources now include standard Kubernetes labels for easy querying and management
+  - `app.kubernetes.io/managed-by: coldpress` - Identifies all Coldpress-managed resources
+  - `app.kubernetes.io/version: 0.2.0` - Tracks Coldpress version
+  - `coldpress.io/job-id: {job_name}` - Job-specific identifier for compute resources
+  - Enables single-command queries: `kubectl get all -A -l app.kubernetes.io/managed-by=coldpress`
+  - Enables bulk operations: `kubectl delete all -n namespace -l coldpress.io/job-id=job-name`
+  - See `docs/LABELS.md` for detailed usage examples
+  - Resolves GitHub issue #37 (No Consistent Resource Labelling)
+
 - **Timestamped node labeling scripts** - Node labeling scripts now include timestamps in filename (e.g., `label-nodes-cluster-20260413-152928.sh`) for consistency with manifests
 
 - **Per-task hardware discovery** - Discovery now runs as init container for each task instead of a separate job
@@ -16,11 +50,19 @@ All notable changes to Coldpress will be documented in this file.
   - Solves the dynamic scheduling problem: discovery reflects actual hardware used by each task
   - Mkdir job now creates task subdirectories: `task-0/`, `task-1/`, etc.
 
+### Fixed
+- **Namespace generation duplication removed** - `generate_project_manifests()` now uses shared `generate_namespace()` function
+  - Eliminates duplicated namespace creation logic in `coldpress_setup/generator.py`
+  - Ensures consistent labeling across all code paths (both use `COLDPRESS_LABELS`)
+  - Privileged namespaces now properly supported in project manifests (security labels applied correctly)
+  - Added `tests/test_namespace_consistency.py` to verify no duplication exists
+  - Resolves GitHub issue #37 (Duplicated Logic)
+
 ### Changed
 - **`coldpress-setup` now generates manifests instead of applying directly**
   - Commands now write timestamped manifest files to `manifests/` directory (configurable with `--output-dir`)
   - Admin is responsible for reviewing and applying manifests with `oc apply -f`
-  - Manifest filenames include subcommand, config name, and timestamp (e.g., `project-researcher-a-20260413-152928.yaml`)
+  - Manifest filenames include subcommand, config name, and timestamp (e.g., `project-coldpress-project-20260413-152928.yaml`)
   - All RBAC permissions and resources are now visible in generated manifests before application
   - Enables GitOps workflows and better audit trails
   - Removed `--dry-run` flag (no longer needed)
@@ -36,6 +78,13 @@ All notable changes to Coldpress will be documented in this file.
   - Generated manifests use `nodeAffinity` (scheduler picks node) or `nodeSelector` (pinned to specific node)
 
 ### Removed
+- **RoCE NIC support temporarily disabled** - Simplified cluster configuration
+  - No longer generates RDMA resources in ClusterQueue (`openshift.io/eno*np0rdma`)
+  - No longer generates NetworkAttachmentDefinitions for SRIOV
+  - The `roce_nics` field is kept in cluster config for reference/future use
+  - Simplifies cluster setup while keeping the option to re-enable later
+  - Functions preserved but disabled: `generate_sriov_network_attachments()`
+
 - **`coldpress-setup verify` command** - Admins can verify resources using standard kubectl/oc commands
   - Use `oc get namespaces`, `oc get pvc -n <namespace>`, etc. instead
 

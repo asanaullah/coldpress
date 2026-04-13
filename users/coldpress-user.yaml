@@ -5,4 +5,4 @@ username: coldpress-user
 
 # Namespaces this user can access
 namespaces:
-  - researcher-a
+  - coldpress-project

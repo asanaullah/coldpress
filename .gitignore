@@ -67,3 +67,6 @@ legacy/
 # Generated output directories
 output/
 manifests/
+
+# User-specific files
+users/asanaullah.yaml

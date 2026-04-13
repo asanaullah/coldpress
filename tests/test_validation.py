@@ -36,7 +36,7 @@ def test_valid_configs():
 
     # Test 3: Valid project config
     print("\n3. Testing project config validation...")
-    with open("projects/researcher-a.yaml") as f:
+    with open("projects/coldpress-project.yaml") as f:
         project_data = yaml.safe_load(f)
         project = validate_project_config(project_data)
         print(f"   ✓ Valid project: namespace={project.namespace}")

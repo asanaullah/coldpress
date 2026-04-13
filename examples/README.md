@@ -30,7 +30,7 @@ Each workload directory contains:
 
 **config.yaml:**
 ```yaml
-project: researcher-a      # References project config researcher-a.yaml (stored in projects/ directory)
+project: coldpress-project      # References project config coldpress-project.yaml (stored in projects/ directory)
 
 # Discovery - runs as init container per task to capture actual node hardware
 discovery: user_snapshot   # Simple format (all tasks, backward compatible)
@@ -69,7 +69,7 @@ cd ddp-training-job/
 ./run.sh
 ```
 
-**Template:**
+**Job spec (generates JobSet named `coldpress-ddp-training`):**
 ```yaml
 name: ddp-training
 

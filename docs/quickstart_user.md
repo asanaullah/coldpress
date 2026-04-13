@@ -45,8 +45,8 @@ ddp-training-job/
 **You'll see output like:**
 ```
 Generating JobSet for: ddp-training
-Project: researcher-a
-Namespace: researcher-a
+Project: coldpress-project
+Namespace: coldpress-project
 Tasks: 1
 
   Task 0 (ddp-training) → Node 0 (GPUs: 2)
@@ -78,10 +78,10 @@ Generated: ddp-training-job/cp.sh
 apiVersion: jobset.x-k8s.io/v1alpha2
 kind: JobSet
 metadata:
-  name: ddp-training
-  namespace: researcher-a
+  name: coldpress-ddp-training
+  namespace: coldpress-project
   labels:
-    kueue.x-k8s.io/queue-name: local-queue-researcher-a
+    kueue.x-k8s.io/queue-name: coldpress-local-queue-coldpress-project
 spec:
   replicatedJobs:
   - name: mkdir       # Job 1: Create results directory and task subdirectories
@@ -157,8 +157,8 @@ JobSet completed successfully!
 Monitoring JobSet: ddp-training
 
 NAMESPACE      NAME                              READY   AGE
-researcher-a   ddp-training-mkdir-0              1/1     15s
-researcher-a   ddp-training-task-0-0             0/1     25s
+coldpress-project   ddp-training-mkdir-0              1/1     15s
+coldpress-project   ddp-training-task-0-0             0/1     25s
 
 Pods:
 NAME                              READY   STATUS       RESTARTS   AGE
@@ -188,7 +188,7 @@ Capturing logs for job: ddp-training
 Fetching logs from pod: ddp-training-task-0-0-ghi789
 
 Logs saved to PVC:
-  /data/researcher-a/coldpress_results/ddp-training-9bdbf55a-20260409_072200/logs/
+  /data/coldpress-project/coldpress_results/ddp-training-9bdbf55a-20260409_072200/logs/
   ├── ddp-training-task-0-0-ghi789.log
   └── combined.log
 
@@ -266,14 +266,14 @@ exit
 
 ```bash
 oc run check-results --rm -i --restart=Never \
-  --image=ubi9/ubi-minimal -n researcher-a \
-  --overrides='{"spec":{"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"researcher-a-storage"}}],"containers":[{"name":"check","image":"ubi9/ubi-minimal","command":["ls","-lR","/data/researcher-a/coldpress_results"],"volumeMounts":[{"name":"data","mountPath":"/data"}]}]}}'
+  --image=ubi9/ubi-minimal -n coldpress-project \
+  --overrides='{"spec":{"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"coldpress-project-storage"}}],"containers":[{"name":"check","image":"ubi9/ubi-minimal","command":["ls","-lR","/data/coldpress-project/coldpress_results"],"volumeMounts":[{"name":"data","mountPath":"/data"}]}]}}'
 ```
 
 ### Results directory structure
 
 ```
-/data/researcher-a/coldpress_results/ddp-training-{uid}-{timestamp}/
+/data/coldpress-project/coldpress_results/ddp-training-{uid}-{timestamp}/
 ├── task-0/
 │   ├── discovery_user_snapshot.json    # Hardware/benchmark data (2.7KB)
 │   └── checkpoints/
@@ -357,7 +357,7 @@ Results copied to: ./results
 - Services (if any were created)
 
 **This will preserve:**
-- All results in PVC (`researcher-a-storage`)
+- All results in PVC (`coldpress-project-storage`)
 - Discovery snapshots
 - Model weights and checkpoints
 - Training logs and statistics
@@ -376,11 +376,11 @@ Cleanup complete!
 
 **Verification:**
 ```bash
-oc get jobset,job,pod,configmap -n researcher-a | grep ddp-training
+oc get jobset,job,pod,configmap -n coldpress-project | grep ddp-training
 # Output: No resources found (all cleaned up)
 
-oc get pvc -n researcher-a
-# Output: researcher-a-storage still exists with all results intact
+oc get pvc -n coldpress-project
+# Output: coldpress-project-storage still exists with all results intact
 ```
 
 **Result:** Cluster resources are now cleaned up, with all results preserved in your PVC.

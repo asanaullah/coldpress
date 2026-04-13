@@ -8,6 +8,12 @@ import shlex
 from urllib.parse import urlparse
 from datetime import datetime, timezone
 
+# Standard labels for all Coldpress-managed resources
+COLDPRESS_LABELS = {
+    "app.kubernetes.io/managed-by": "coldpress",
+    "app.kubernetes.io/version": "0.2.0",
+}
+
 
 def generate_configmap(name, namespace, file_data):
     """Generate ConfigMap for mounting files into containers.
@@ -23,7 +29,11 @@ def generate_configmap(name, namespace, file_data):
     return {
         "apiVersion": "v1",
         "kind": "ConfigMap",
-        "metadata": {"name": name, "namespace": namespace},
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "labels": COLDPRESS_LABELS.copy(),
+        },
         "data": file_data,
     }
 
@@ -63,7 +73,7 @@ def _infer_blocking_type_and_health_check(task, task_id, job_id, namespace):
             path = http_get.get("path", "/")
             port = http_get.get("port", 80)
             scheme = http_get.get("scheme", "HTTP").lower()
-            service_name = f"s-{job_id}-{task_id}.{namespace}.svc"
+            service_name = f"coldpress-s-{job_id}-{task_id}.{namespace}.svc"
             task["health_check"] = f"{scheme}://{service_name}:{port}{path}"
     else:
         task["blocking"] = "completion"
@@ -85,7 +95,7 @@ def _substitute_dns_in_args(tasks, job_id, namespace):
 
             for task_name, target_task_id in task_names.items():
                 if f"http://{task_name}:" in arg or f"https://{task_name}:" in arg:
-                    service_name = f"s-{job_id}-{target_task_id}.{namespace}.svc"
+                    service_name = f"coldpress-s-{job_id}-{target_task_id}.{namespace}.svc"
                     arg = arg.replace(f"://{task_name}:", f"://{service_name}:")
             args[i] = arg
 
@@ -213,7 +223,7 @@ def generate_jobset(job_spec, node_assignments):
     else:
         discovery_task_indices = set()
 
-    data_pvc_name = storage.get("results", f"{namespace}-storage")
+    data_pvc_name = storage.get("results", f"coldpress-{namespace}-storage")
     model_pvc_name = storage.get("models", "coldpress-model-storage")
     base_dir = generate_base_dir(namespace, job_id)
 
@@ -260,14 +270,20 @@ def generate_jobset(job_spec, node_assignments):
             "targetReplicatedJobs": driver_jobs,
         }
 
-    # Build JobSet manifest
+    # Build JobSet manifest with standard labels
+    jobset_labels = COLDPRESS_LABELS.copy()
+    jobset_labels.update({
+        "kueue.x-k8s.io/queue-name": f"coldpress-local-queue-{namespace}",
+        "coldpress.io/job-id": job_id,
+    })
+
     jobset = {
         "apiVersion": "jobset.x-k8s.io/v1alpha2",
         "kind": "JobSet",
         "metadata": {
-            "name": job_id,
+            "name": f"coldpress-{job_id}",
             "namespace": namespace,
-            "labels": {"kueue.x-k8s.io/queue-name": f"local-queue-{namespace}"},
+            "labels": jobset_labels,
             "annotations": {
                 "coldpress.io/base-dir": base_dir,
                 "coldpress.io/storage-pvc": data_pvc_name,
@@ -567,13 +583,20 @@ def create_service(task, task_id, job_id, namespace):
         parsed = urlparse(health_check)
         port = parsed.port or 8000
 
+        # Merge standard labels with job-specific labels
+        service_labels = COLDPRESS_LABELS.copy()
+        service_labels.update({
+            "coldpress/gid": job_id,
+            "coldpress.io/job-id": job_id,
+        })
+
         service = {
             "apiVersion": "v1",
             "kind": "Service",
             "metadata": {
-                "name": f"s-{job_id}-{task_id}",
+                "name": f"coldpress-s-{job_id}-{task_id}",
                 "namespace": namespace,
-                "labels": {"coldpress/gid": job_id},
+                "labels": service_labels,
             },
             "spec": {
                 "selector": {
@@ -585,7 +608,9 @@ def create_service(task, task_id, job_id, namespace):
             },
         }
         return service
-    except Exception:
+    except (ValueError, AttributeError, KeyError) as e:
+        # URL parsing failed or service configuration is invalid
+        print(f"Warning: Could not create service for task {task_id}: {e}")
         return None
 
 
@@ -641,7 +666,7 @@ def build_discovery_init_container(template_path, task_id, base_dir, data_pvc_na
             container["args"] = [original_command + rename_cmd]
 
         return container
-    except Exception as e:
+    except (FileNotFoundError, yaml.YAMLError, KeyError, IndexError) as e:
         print(f"Warning: Could not load discovery template {template_path}: {e}")
         return None
 
@@ -796,7 +821,7 @@ def build_discovery_job(template_path, base_dir, data_pvc_name, node_id):
                 }
             },
         }
-    except Exception as e:
+    except (FileNotFoundError, yaml.YAMLError, KeyError, IndexError) as e:
         print(f"Warning: Could not load discovery template {template_path}: {e}")
         return None
 
