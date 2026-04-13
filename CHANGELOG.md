@@ -48,16 +48,16 @@ All notable changes to Coldpress will be documented in this file.
 
 ### Changed
 - **Version downgrade from 2.0.0 to 0.2.0** - Reset version to reflect early development stage
-- **Switched to `uv` package manager** - Faster and more reliable than pip
+- **Switched to `uv` package manager**
   - `setup-env.sh` now uses `uv` for virtual environment and package installation
   - Virtual environment renamed from `venv/` to `.venv/`
 - **Removed `kubernetes` Python dependency** - Replaced with direct `oc`/`kubectl` subprocess calls
   - Better compatibility across different cluster configurations
   - Applies to `coldpress/allocator.py` and `coldpress_setup/cli.py`
 - **Refactored `coldpress-setup` CLI** - Changed from single command to subcommand structure:
-  - `coldpress-setup apply <file>` → `coldpress-setup apply cluster|project|user <file>`
+  - `coldpress-setup apply <file>` → `coldpress-setup generate cluster|project|user <file>`
   - Auto-resolves config files from standard directories (cluster/, projects/, users/)
-  - Commands now work without path prefixes: `coldpress-setup apply cluster ocp-test.yaml`
+  - Commands work with just filename: `coldpress-setup generate cluster ocp-test.yaml`
 
 ### Added
 - **Shared validation module** (`coldpress_common/model.py`) - Config files are now validated at load time by both tools

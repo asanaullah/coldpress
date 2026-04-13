@@ -23,7 +23,7 @@ Coldpress is a local manifest generator for running AI/HPC workloads on Kubernet
 │ Phase 1: Admin Setup (One-time)                                 │
 ├─────────────────────────────────────────────────────────────────┤
 │ 1. coldpress-setup generate cluster → manifests/cluster-*.yaml │
-│                                     → manifests/label-nodes.sh  │
+│                                     → manifests/label-nodes-*.sh │
 │                                                                 │
 │ 2. ./manifests/label-nodes-*.sh (labels nodes for scheduling)  │
 │                                                                 │
@@ -153,8 +153,7 @@ coldpress/
 ├── docs/                   # Documentation
 ├── pyproject.toml          # Package configuration (modern Python packaging)
 ├── setup.py                # Package setup (legacy, for backward compatibility)
-├── setup-env.sh            # Environment setup script (uses uv)
-└── steps.md                # Complete tutorial walkthrough
+└── setup-env.sh            # Environment setup script
 ```
 
 ## Requirements
@@ -166,7 +165,6 @@ coldpress/
 
 **Local development:**
 - Python 3.9+ (tested on Python 3.14)
-- `uv` (auto-installed by setup-env.sh)
 
 **For applying manifests to cluster:**
 - **`kubectl` or `oc` CLI** (tested with oc 4.17.0)
@@ -194,7 +192,7 @@ coldpress generate --config examples/pytorch_ddp_training/config.yaml
 # Outputs to: jobs/ddp-training-job/ instead of output/ddp-training-job/
 
 export COLDPRESS_MANIFESTS_DIR=gitops/manifests
-coldpress-setup apply project researcher-a.yaml
+coldpress-setup generate project researcher-a.yaml
 # Outputs to: gitops/manifests/project-researcher-a-*.yaml
 ```
 

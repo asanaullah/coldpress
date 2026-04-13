@@ -20,7 +20,7 @@ Both `coldpress` and `coldpress-setup` tools validate YAML files automatically:
 2. **Task spec validation** - Validates container specs, resources, volumes, and dependencies
 3. **Project config validation** - Ensures namespace and storage are properly configured
 
-### `coldpress-setup apply`
+### `coldpress-setup generate`
 1. **Project config validation** - Validates namespace, storage, cluster_queue
 2. **User config validation** - Validates username and namespaces list
 
