@@ -33,17 +33,17 @@ The setup script uses `uv` (fast Python package installer) and will install it a
 
 Apply cluster-wide configuration:
 ```bash
-coldpress-setup apply cluster cluster/ocp-test-nerc-mghpcc.yaml
+coldpress-setup apply cluster ocp-test-nerc-mghpcc.yaml
 ```
 
 Apply project configuration:
 ```bash
-coldpress-setup apply project projects/researcher-a.yaml
+coldpress-setup apply project researcher-a.yaml
 ```
 
 Grant user access (user must already exist in cluster auth system):
 ```bash
-coldpress-setup apply user users/coldpress-user.yaml
+coldpress-setup apply user coldpress-user.yaml
 ```
 
 **Note:** 
