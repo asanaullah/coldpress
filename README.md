@@ -5,8 +5,8 @@ Coldpress is a local manifest generator for running AI/HPC workloads on Kubernet
 
 **Two-piece architecture:**
 
-1. **Setup** (`coldpress-setup`) - Manifest generator for one-time cluster setup (node labels, queues, namespaces, RBAC)
-2. **Execute** (`coldpress`) - Manifest generator for job specifications, creates JobSet YAML + bash helper scripts
+1. **Admin** (`coldpress-setup`) - Manifest generator for one-time cluster setup (node labels, queues, namespaces, RBAC)
+2. **User** (`coldpress`) - Manifest generator for job specifications, creates JobSet YAML + bash helper scripts
 
 **Key principle:** All manifests are generated locally and can be inspected before applying to the cluster. This enables GitOps workflows and provides full transparency.
 
