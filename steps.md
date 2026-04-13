@@ -23,6 +23,9 @@ This document walks through a complete end-to-end test of Coldpress, demonstrati
 
 This section covers the initial development environment setup. This only needs to be done once on your local machine.
 
+**Prerequisites:**
+- Python 3.9+ (tested on Python 3.14)
+
 ## A1: Install Coldpress CLI Tools
 
 **What:** Install the `coldpress` and `coldpress-setup` command-line tools.
@@ -84,10 +87,10 @@ source .venv/bin/activate
 This section covers cluster-wide configuration tasks that require admin privileges. These are typically done once by a cluster administrator.
 
 **Prerequisites:**
-- Admin access to Kubernetes/OpenShift cluster
-- Kueue operator installed
-- JobSet operator installed
-- **`kubectl` or `oc` CLI installed and configured** (required for all Coldpress operations)
+- Admin access to Kubernetes/OpenShift cluster (tested on OpenShift 4.21.5, Kubernetes v1.34.4)
+- Kueue operator installed (tested with v0.11.6, API v1beta1)
+- JobSet operator installed (tested with v1.0.0, API v1alpha2)
+- **`kubectl` or `oc` CLI installed and configured** (tested with oc 4.17.0, required for all Coldpress operations)
 - **Optional:** Set `COLDPRESS_OC_FLAGS` environment variable for additional kubectl/oc flags (e.g., `export COLDPRESS_OC_FLAGS="--as system:admin"`)
 
 ## B1: Apply Cluster Configuration

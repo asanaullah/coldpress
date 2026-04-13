@@ -147,14 +147,14 @@ coldpress/
 ## Requirements
 
 **Cluster:**
-- Kubernetes cluster (tested on OpenShift)
-- Kueue operator (for job queueing)
-- JobSet operator (for multi-task jobs)
+- Kubernetes cluster (tested on OpenShift 4.21.5, Kubernetes v1.34.4)
+- Kueue operator (tested with v0.11.6, API v1beta1)
+- JobSet operator (tested with v1.0.0, API v1alpha2)
 
 **Local development:**
 - Python 3.9+ (tested on Python 3.14)
 - `uv` (fast Python package installer - auto-installed by setup-env.sh)
-- **`kubectl` or `oc` CLI** (required for all cluster operations - must be installed separately)
+- **`kubectl` or `oc` CLI** (tested with oc 4.17.0, required for all cluster operations - must be installed separately)
 
 ## Environment Variables
 
