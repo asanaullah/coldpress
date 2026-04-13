@@ -6,28 +6,43 @@ set -e
 
 echo "Setting up Coldpress..."
 
-# Create virtual environment if it doesn't exist
-if [ ! -d "venv" ]; then
-    echo "Creating virtual environment..."
-    python3 -m venv venv
+# Check for kubectl or oc (required for all Coldpress operations)
+if ! command -v oc &> /dev/null && ! command -v kubectl &> /dev/null; then
+    echo "ERROR: Neither kubectl nor oc found in PATH"
+    echo ""
+    echo "Coldpress requires kubectl or oc to interact with Kubernetes/OpenShift clusters."
+    echo "Please install one of the following:"
+    echo "  - kubectl: https://kubernetes.io/docs/tasks/tools/"
+    echo "  - oc (OpenShift CLI): https://docs.openshift.com/container-platform/latest/cli_reference/openshift_cli/getting-started-cli.html"
+    exit 1
 fi
 
-# Activate virtual environment
-echo "Activating virtual environment..."
-source venv/bin/activate
+if command -v oc &> /dev/null; then
+    echo "Found oc: $(which oc)"
+elif command -v kubectl &> /dev/null; then
+    echo "Found kubectl: $(which kubectl)"
+fi
 
-# Upgrade pip
-echo "Upgrading pip..."
-pip install --upgrade pip --quiet
+# Check if uv is installed
+if ! command -v uv &> /dev/null; then
+    echo "uv not found. Installing uv..."
+    python3 -m pip install --user uv
+fi
+
+# Create virtual environment if it doesn't exist
+if [ ! -d ".venv" ]; then
+    echo "Creating virtual environment with uv..."
+    uv venv
+fi
 
 # Install coldpress
 echo "Installing coldpress..."
-pip install -e . --quiet
+uv pip install -e .
 
 echo "Coldpress setup complete!"
 echo ""
 echo "To activate the environment, run:"
-echo "  source venv/bin/activate"
+echo "  source .venv/bin/activate"
 echo ""
 echo "To test coldpress, run:"
 echo "  coldpress generate examples/vllm_guidellm_benchmark/job-spec.yaml -o ./test-job/"

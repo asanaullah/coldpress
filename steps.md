@@ -1,25 +1,64 @@
 <!-- Assisted by: Claude Sonnet 4.5 -->
-# PyTorch DDP Training Example - Step by Step
+# Coldpress Full Test - PyTorch DDP Training Example
 
 ## Overview
-Running the PyTorch Distributed Data Parallel (DDP) training example with 2 GPUs.
+
+This document walks through a complete end-to-end test of Coldpress, demonstrating all components from initial setup to running a PyTorch Distributed Data Parallel (DDP) training job with 2 GPUs.
+
+**What this test covers:**
+- Development environment setup
+- Cluster-wide configuration (admin task, one-time)
+- Project and user configuration (admin task, one-time)
+- User workflow for running AI/HPC workloads (repeatable)
+
+**The test workload:**
+- PyTorch DDP training on MNIST dataset
+- 2 GPUs, 50 epochs
+- Results saved to persistent storage
+- Hardware discovery and benchmarking
 
 ---
 
-## Step 1: Setup Python Environment ✓
+# Part A: Setup (One-Time)
 
-**What we're doing:** Installing Coldpress CLI tools in a Python virtual environment.
+This section covers the initial development environment setup. This only needs to be done once on your local machine.
 
-**Why:** We need the `coldpress` and `coldpress-setup` command-line tools to generate job manifests.
+## A1: Install Coldpress CLI Tools
 
-**Commands:**
+**What:** Install the `coldpress` and `coldpress-setup` command-line tools.
+
+**Why:** These tools generate job manifests and configure cluster resources.
+
+### Option 1: Automated setup (recommended)
+
 ```bash
-cd /home/ahmed/MOC/esi/coldpress_repos/helm
-source venv/bin/activate
-pip install -e .
+cd /path/to/coldpress
+./setup-env.sh
+source .venv/bin/activate
 ```
 
-**Verification:**
+The script automatically installs `uv` (fast Python package installer) if not present.
+
+### Option 2: Manual setup
+
+```bash
+cd /path/to/coldpress
+
+# Install uv if not already installed
+python3 -m pip install --user uv
+
+# Create virtual environment with uv
+uv venv
+
+# Activate the virtual environment
+source .venv/bin/activate
+
+# Install Coldpress CLI tools
+uv pip install -e .
+```
+
+### Verification
+
 ```bash
 coldpress --version
 # Output: coldpress, version 2.0.0
@@ -28,109 +67,181 @@ coldpress-setup --version
 # Output: coldpress-setup, version 2.0.0
 ```
 
-**Result:** ✓ Both CLI tools installed successfully.
+### For subsequent sessions
 
----
+After the initial setup, you only need to activate the virtual environment:
 
-## Step 2: Check if researcher-a Namespace Exists ✓
-
-**What we did:** Checked if the researcher-a namespace and its resources exist.
-
-**Commands:**
 ```bash
-oc get namespace researcher-a
-# Output: researcher-a   Active   37d
-# ✓ Namespace exists
-
-oc get pvc researcher-a-storage -n researcher-a
-# Output: ✗ PVC does NOT exist
+source .venv/bin/activate
 ```
 
-**Result:** Namespace exists, but PVC and other resources need to be created.
+**Result:** Your virtual environment is now set up with both CLI tools installed.
 
 ---
 
-## Step 3: Apply Cluster Configuration ✓
+# Part B: Admin - Cluster Configuration (One-Time)
 
-**What we did:** Applied cluster-wide configuration using admin privileges.
+This section covers cluster-wide configuration tasks that require admin privileges. These are typically done once by a cluster administrator.
+
+**Prerequisites:**
+- Admin access to Kubernetes/OpenShift cluster
+- Kueue operator installed
+- JobSet operator installed
+- **`kubectl` or `oc` CLI installed and configured** (required for all Coldpress operations)
+- **Optional:** Set `COLDPRESS_OC_FLAGS` environment variable for additional kubectl/oc flags (e.g., `export COLDPRESS_OC_FLAGS="--as system:admin"`)
+
+## B1: Apply Cluster Configuration
+
+**What:** Configure cluster-wide resources (ResourceFlavors, ClusterQueue).
+
+**Why:** Sets up the Kueue queueing system for GPU allocation across the cluster.
 
 **Command:**
 ```bash
-source venv/bin/activate
-coldpress-setup apply cluster/ocp-test-nerc-mghpcc.yaml
+coldpress-setup apply cluster ocp-test-nerc-mghpcc.yaml
 ```
 
-**Result:**
-```
-Using oc to apply cluster config (as system:admin)...
-kueue.kueue.openshift.io/cluster unchanged
-jobsetoperator.operator.openshift.io/cluster unchanged
-resourceflavor.kueue.x-k8s.io/node0 unchanged
-resourceflavor.kueue.x-k8s.io/node1 unchanged
-clusterqueue.kueue.x-k8s.io/cluster-queue-coldpress created
-```
-
-**Resources:**
-- ✓ Kueue operator (already existed)
-- ✓ JobSet operator (already existed)
-- ✓ ResourceFlavors: node0, node1 (already existed)
-- ✓ ClusterQueue: cluster-queue-coldpress (newly created)
-
-**Note:** Used `oc --as system:admin` for cluster-scoped resources.
-
----
-
-## Step 4: Apply Project Configuration ✓
-
-**What we did:** Applied project configuration using admin privileges.
-
-**Command:**
-```bash
-source venv/bin/activate
-coldpress-setup apply projects/researcher-a.yaml
-```
-
-**Result:**
-```
-Using oc to apply manifests (as system:admin)...
-localqueue.kueue.x-k8s.io/local-queue-researcher-a unchanged
-namespace/researcher-a configured
-persistentvolumeclaim/researcher-a-storage created
-serviceaccount/coldpress-user created
-role.rbac.authorization.k8s.io/coldpress-user-role configured
-rolebinding.rbac.authorization.k8s.io/coldpress-user-binding configured
-```
-
-**Resources created/configured:**
-- ✓ Namespace: researcher-a (already existed, now configured)
-- ✓ LocalQueue: local-queue-researcher-a (already existed)
-- ✓ PVC: researcher-a-storage (500Gi, nfs-csi, newly created)
-- ✓ RBAC: coldpress-user ServiceAccount, Role, RoleBinding
+**This creates:**
+- Kueue operator configuration
+- JobSet operator configuration
+- ResourceFlavors (GPU node pools: node0, node1)
+- ClusterQueue (cluster-queue-coldpress)
 
 **Verification:**
 ```bash
-oc get namespace researcher-a
-# Output: researcher-a   Active   37d
-
-oc get pvc -n researcher-a
-# Output: researcher-a-storage   Bound   pvc-567e1e0b-6b3b-4fe7-9c3d-3acff47d2340   500Gi   RWX   nfs-csi   28s
+kubectl get clusterqueues
+kubectl get resourceflavors
 ```
 
-**Note:** Used `oc --as system:admin` for namespace-scoped resources that require elevated privileges.
+**You should see:**
+```
+NAME                      AGE
+cluster-queue-coldpress   5s
+
+NAME    AGE
+node0   5s
+node1   5s
+```
 
 ---
 
-## Step 5: Generate DDP Training Job Manifests ✓
+## B2: Apply Project Configuration
 
-**What we did:** Generated JobSet manifests and helper scripts using coldpress CLI.
+**What:** Create a project namespace with storage and queueing resources.
+
+**Why:** Provides isolated workspace for a research group or project team.
 
 **Command:**
 ```bash
-source venv/bin/activate
+coldpress-setup apply project researcher-a.yaml
+```
+
+**This creates:**
+- Namespace: `researcher-a`
+- LocalQueue: `local-queue-researcher-a` (connects to ClusterQueue)
+- PersistentVolumeClaim: `researcher-a-storage` (500Gi)
+- RBAC: ServiceAccount, Role, RoleBinding for job execution
+
+**Verification:**
+```bash
+kubectl get namespace researcher-a
+kubectl get pvc -n researcher-a
+kubectl get localqueues -n researcher-a
+```
+
+**You should see:**
+```
+NAME           STATUS   AGE
+researcher-a   Active   5s
+
+NAME                    STATUS   VOLUME   CAPACITY   ACCESS MODES   AGE
+researcher-a-storage    Bound    pvc-...  500Gi      RWX            5s
+
+NAME                        CLUSTERQUEUE              AGE
+local-queue-researcher-a    cluster-queue-coldpress   5s
+```
+
+---
+
+## B3: Apply User RBAC
+
+**What:** Grant a user permission to submit jobs to the project namespace.
+
+**Why:** Allows regular users to create and manage JobSets without admin privileges.
+
+**Command:**
+```bash
+coldpress-setup apply user asanaullah.yaml
+```
+
+**User config example** (`users/asanaullah.yaml`):
+```yaml
+username: asanaullah
+namespaces:
+  - researcher-a
+```
+
+**This creates:**
+- RoleBinding: `coldpress-user-asanaullah` in namespace `researcher-a`
+- Grants permissions: create/manage JobSets, view Jobs/Pods/Services
+
+**Verification:**
+```bash
+kubectl get rolebindings -n researcher-a | grep coldpress-user
+```
+
+**Expected output:**
+```
+coldpress-user-asanaullah   5s
+```
+
+**Result:** Cluster, project, and user configuration is now complete. Regular users can submit jobs.
+
+---
+
+# Part C: User Workflow - Running a Workload
+
+This section shows the typical workflow for a regular user submitting and managing an AI/HPC workload. These steps are repeatable for each job.
+
+**Prerequisites:**
+- Coldpress CLI tools installed (Part A)
+- **`kubectl` or `oc` CLI installed and configured** (required)
+- Admin has configured cluster, project, and user access (Part B)
+- User has access to the target namespace
+
+---
+
+## C1: Generate Job Manifests
+
+**What:** Generate JobSet manifests and helper scripts from a job specification.
+
+**Why:** Creates all Kubernetes resources needed to run your workload.
+
+**Command:**
+```bash
+source .venv/bin/activate
 coldpress generate --config examples/pytorch_ddp_training/config.yaml
 ```
 
-**Result:**
+**Input files:**
+- `examples/pytorch_ddp_training/config.yaml` - Coldpress job configuration
+- `examples/pytorch_ddp_training/job-spec.yaml` - Workload specification
+- `examples/pytorch_ddp_training/train.py` - Training script
+- `examples/pytorch_ddp_training/model_config.json` - Model configuration
+
+**This generates** (`output/ddp-training-job/`):
+```
+ddp-training-job/
+├── jobset.yaml      # JobSet manifest with all tasks
+├── metadata.json    # Job metadata and node assignments
+├── run.sh           # Apply JobSet and wait for completion
+├── cleanup.sh       # Delete JobSet and services
+├── monitor.sh       # Watch job status
+├── logs.sh          # Capture and save logs to PVC
+└── explore.sh       # Interactive shell to browse results
+```
+
+**You'll see output like:**
 ```
 Generating JobSet for: ddp-training
 Project: researcher-a
@@ -148,54 +259,19 @@ Generated: ddp-training-job/logs.sh
 Generated: ddp-training-job/explore.sh
 ```
 
-**Generated files:**
-- JobSet manifest: `jobset.yaml`
-- Metadata: `metadata.json`
-- Helper scripts: `run.sh`, `cleanup.sh`, `monitor.sh`, `logs.sh`, `explore.sh`
-
-**Output directory:** `ddp-training-job/`
-
-**Note:** Warnings about Kueue permissions are expected (user cannot read ClusterQueue). Job allocation still succeeded using node discovery.
+**Result:** Job manifests and helper scripts are now ready to use.
 
 ---
 
-## Step 6: Inspect Generated Output Directory ✓
+## C2: Inspect Generated Manifests (Optional)
 
-**What we did:** Inspected the structure and contents of generated files.
+**What:** Review the generated JobSet manifest before applying.
 
-**Output directory:** `output/ddp-training-job/`
+**Why:** Understand what resources will be created and verify configuration.
 
-**Generated files:**
-```
-output/ddp-training-job/
-├── jobset.yaml      (263 lines) - JobSet manifest with 3 ReplicatedJobs
-├── metadata.json    (14 lines)  - Job metadata and node assignments
-├── run.sh           (31 lines)  - Apply JobSet and wait for completion
-├── cleanup.sh       (19 lines)  - Delete JobSet and services
-├── monitor.sh       (11 lines)  - Watch job status
-├── logs.sh          (23 lines)  - Stream pod logs
-└── explore.sh       (74 lines)  - Interactive shell with PVC mounted
-```
+**File:** `output/ddp-training-job/jobset.yaml`
 
 **JobSet structure:**
-1. **mkdir job** - Creates results directory in PVC
-2. **discovery job** - Records hardware snapshot (right after mkdir)
-3. **ddp-training job** - Main PyTorch DDP training (2 GPUs, node 0)
-
-**Key verification:**
-- ✓ Discovery job appears immediately after mkdir job
-- ✓ All helper scripts are executable
-- ✓ Output is in `output/` subdirectory (coldpress now always uses this structure)
-
----
-
-## Step 7: Review Generated JobSet Manifest ✓
-
-**What we did:** Reviewed the generated JobSet YAML manifest in detail.
-
-**Location:** `output/ddp-training-job/jobset.yaml`
-
-**JobSet Structure:**
 ```yaml
 apiVersion: jobset.x-k8s.io/v1alpha2
 kind: JobSet
@@ -205,178 +281,203 @@ metadata:
   labels:
     kueue.x-k8s.io/queue-name: local-queue-researcher-a
 spec:
-  suspend: true  # Kueue will unsuspend when resources available
   replicatedJobs:
   - name: mkdir       # Job 1: Create results directory
-  - name: discovery   # Job 2: Hardware snapshot
-  - name: task-0      # Job 3: PyTorch DDP training
+  - name: discovery   # Job 2: Hardware snapshot and benchmarking
+  - name: task-0      # Job 3: PyTorch DDP training (2 GPUs)
 ```
 
-**Task-0 (DDP Training) Details:**
-- **Image:** `pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime`
-- **Node:** `coldpress.node: '0'` (node selector)
-- **Resources:**
-  - GPUs: 2 (`nvidia.com/gpu: '2'`)
-  - Memory: 16Gi
-  - CPU: 8 cores
-- **Working Directory:** `/workspace`
-- **Command:** `python -m torch.distributed.run`
-- **Args:**
-  - `--nproc_per_node=2` (2 GPUs for DDP)
-  - `--nnodes=1` (single node training)
-  - `train.py` (training script)
-  - `--dataset=mnist`, `--epochs=50`, `--batch-size=128`, etc.
-- **Volumes:**
-  - `coldpress-data` PVC → `/mnt/coldpress-data` and `/results`
-  - `dshm` emptyDir (Memory, 16Gi) → `/dev/shm` (for PyTorch shared memory)
-- **Environment:** `NCCL_DEBUG=INFO` (NCCL logging)
-- **Dependency:** Waits for discovery job to complete
-
-**Job Dependencies:**
-1. mkdir → discovery → task-0 (sequential execution)
-
-**Note:** Fixed generator bug that was ignoring container array in job-spec.yaml.
+**Key configuration for task-0 (training job):**
+- Image: `pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime`
+- Node selector: `coldpress.node: '0'`
+- Resources: 2 GPUs, 16Gi memory, 8 CPU cores
+- Command: `python -m torch.distributed.run --nproc_per_node=2 train.py`
+- Volumes: PVC for results, emptyDir for shared memory
+- Dependencies: Waits for discovery job to complete
 
 ---
 
-## Step 8: Apply Job to Cluster ✓
+## C3: Run the Job
 
-**What we did:** Applied JobSet to cluster and monitored execution.
+**What:** Apply the JobSet to the cluster and wait for completion.
 
-**Issue encountered:** User permission error - user "asanaullah" couldn't create JobSets.
+**Why:** Submits your workload to Kueue for scheduling and execution.
 
-**Solution:** Created user RBAC system:
-1. Created `users/` directory for user configurations
-2. Created `users/asanaullah.yaml` with username and namespace access list
-3. Updated `coldpress-setup` to handle user configs
-4. Applied user RBAC: `coldpress-setup apply users/asanaullah.yaml`
-
-**User config:**
-```yaml
-username: asanaullah
-namespaces:
-  - researcher-a
-```
-
-**RBAC generated:**
-- RoleBinding: `coldpress-user-asanaullah` in `researcher-a` namespace
-- Grants user permission to create/manage JobSets, view Jobs/Pods/Services
-
-**Job submission:**
+**Commands:**
 ```bash
 cd output/ddp-training-job
 ./run.sh
 ```
 
-**Result:**
+**What happens:**
+1. JobSet is created in the cluster
+2. Kueue queues the job and waits for resources
+3. When GPUs are available, Kueue unsuspends the JobSet
+4. Jobs execute in order: mkdir → discovery → training
+5. Script waits for all jobs to complete
+
+**You'll see:**
 ```
 Applying JobSet...
 jobset.jobset.x-k8s.io/ddp-training created
 
-Job status (after 80s):
-- mkdir job: Complete (9s)
-- discovery job: Complete (5s)  
-- task-0 (training): Running (67s and counting)
+Waiting for JobSet to complete...
+Job status: Running
+Job status: Running
+...
+Job status: Complete
+
+JobSet completed successfully!
 ```
 
-**Issue #2: Job failed to schedule - missing tolerations**
-- Error: "7 node(s) had untolerated taint(s)"
-- Solution: Added `tolerate_all: true` to job-spec.yaml
-- Generator now adds `tolerations: [{operator: Exists}]` to pod spec
-- Result: Pod scheduled successfully ✓
+**Execution timeline (typical):**
+- mkdir: 5-10 seconds
+- discovery: 5-10 seconds  
+- training: 2-3 minutes (depends on workload)
 
-**Job execution after fix:**
-```bash
-oc delete jobset ddp-training -n researcher-a
-rm -rf output/ddp-training-job
-coldpress generate --config examples/pytorch_ddp_training/config.yaml
-cd output/ddp-training-job && ./run.sh
-```
-
-**Status:**
-- mkdir: ✓ Complete
-- discovery: ✓ Complete
-- task-0: Scheduled and ran (tolerations working!)
-  - Error: train.py not found (example job needs actual training script)
-
-**Note:** Scheduling issue resolved. The tolerations are now properly applied and pods can schedule on tainted nodes.
+**Result:** Your job is now submitted and will execute when resources are available.
 
 ---
 
-## Step 9: Monitor Job Progress
+## C4: Monitor Job Progress
 
-**Status:** Pending
+**What:** Watch the job status in real-time.
 
----
-
-## Step 10: View Job Logs ✓
-
-**What we did:** Captured and saved job logs to persistent storage.
-
-**Implementation:**
-- Updated logs.sh script to save logs to PVC
-- Logs are saved to `{base_dir}/logs/` directory
-- Creates individual pod logs and combined log file
+**Why:** Track progress and identify issues quickly.
 
 **Command:**
 ```bash
-cd output/ddp-training-job
-./logs.sh
+./monitor.sh
 ```
 
-**Results structure:**
+**Output:**
 ```
-/data/researcher-a/coldpress_results/ddp-training-9bdbf55a-20260409_072200/logs/
-├── ddp-training-task-0-0-0-pnqfr.log (8.7KB, 109 lines) - Individual pod log
-└── combined.log (8.8KB, 110 lines) - Combined log from all pods
+Monitoring JobSet: ddp-training
+
+NAMESPACE      NAME                              READY   AGE
+researcher-a   ddp-training-mkdir-0              1/1     15s
+researcher-a   ddp-training-discovery-0          1/1     20s
+researcher-a   ddp-training-task-0-0             0/1     25s
+
+Pods:
+NAME                              READY   STATUS    RESTARTS   AGE
+ddp-training-mkdir-0-0-abc123     0/1     Completed 0          15s
+ddp-training-discovery-0-0-def456 0/1     Completed 0          20s
+ddp-training-task-0-0-ghi789      1/1     Running   0          25s
 ```
 
-**Log contents:**
-- Dataset download progress
-- NCCL initialization (GPU communication)
-- Training progress (epochs 10, 20, 30, 40, 50)
-- Final accuracy: 94.55%
-- Model save confirmation
-
-**Key fix:**
-- Used direct piping (`oc logs | oc exec -i ... sh -c "cat > file"`) instead of `oc cp` to avoid tar dependency in minimal images
+**Tip:** Press Ctrl+C to exit monitoring.
 
 ---
 
-## Step 11: Explore Results Directory ✓
+## C5: View and Save Logs
 
-**What we did:** Explored the training results saved to PVC.
+**What:** Capture pod logs and save them to persistent storage.
 
-**Method 1: Using explore.sh script**
+**Why:** Preserve training output, metrics, and debugging information.
+
+**Command:**
 ```bash
-cd output/ddp-training-job
+./logs.sh
+```
+
+**Output:**
+```
+Capturing logs for job: ddp-training
+Fetching logs from pod: ddp-training-task-0-0-ghi789
+
+Logs saved to PVC:
+  /data/researcher-a/coldpress_results/ddp-training-9bdbf55a-20260409_072200/logs/
+  ├── ddp-training-task-0-0-ghi789.log
+  └── combined.log
+
+Log capture complete!
+```
+
+**What's in the logs:**
+- Dataset download progress
+- NCCL initialization (GPU communication)
+- Training progress (epochs, loss, accuracy)
+- Model save confirmation
+
+**Example log snippet:**
+```
+Epoch 10/50 - Loss: 0.234 - Accuracy: 85.2%
+Epoch 20/50 - Loss: 0.156 - Accuracy: 90.8%
+Epoch 30/50 - Loss: 0.128 - Accuracy: 92.5%
+Epoch 40/50 - Loss: 0.115 - Accuracy: 93.8%
+Epoch 50/50 - Loss: 0.111 - Accuracy: 94.55%
+Saving model to /results/checkpoints/model_weights.pth
+Training complete!
+```
+
+**Result:** Logs are now captured and saved to your PVC.
+
+---
+
+## C6: Explore Results
+
+**What:** Browse the results directory in persistent storage.
+
+**Why:** Inspect training outputs, model weights, and metrics.
+
+### Option 1: Using explore.sh (recommended)
+
+```bash
 ./explore.sh
 ```
 
-**Result:**
-- ✓ Interactive pod created and mounted PVC
-- ✓ Shell opened at results directory
-- ✓ Pod auto-cleaned up on exit
+**What happens:**
+- Creates a temporary interactive pod
+- Mounts the PVC with your results
+- Opens a shell at the results directory
+- Auto-cleans up the pod when you exit
 
-**Method 2: Quick check with temporary pod**
+**Inside the shell:**
 ```bash
-oc run check-results --rm -i --restart=Never --image=ubi9/ubi-minimal -n researcher-a \
-  --overrides='...' # see full command in conversation
+# You're now in the results directory
+ls -lh
+
+# Output:
+# discovery_user_snapshot.json
+# checkpoints/
+# logs/
+
+# Check training stats
+cat checkpoints/training_stats.json
+
+# View model file
+ls -lh checkpoints/model_weights.pth
+# -rw-r--r-- 1 nobody nobody 77M Apr 9 07:24 model_weights.pth
+
+# Exit the shell
+exit
 ```
 
-**Results Found:**
+### Option 2: Quick check with kubectl
+
+```bash
+kubectl run check-results --rm -i --restart=Never \
+  --image=ubi9/ubi-minimal -n researcher-a \
+  --overrides='{"spec":{"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"researcher-a-storage"}}],"containers":[{"name":"check","image":"ubi9/ubi-minimal","command":["ls","-lR","/data/researcher-a/coldpress_results"],"volumeMounts":[{"name":"data","mountPath":"/data"}]}]}}'
 ```
-/data/researcher-a/coldpress_results/ddp-training-9bdbf55a-20260409_072200/
-├── discovery_user_snapshot.json (2.7KB)
+
+### Results directory structure
+
+```
+/data/researcher-a/coldpress_results/ddp-training-{uid}-{timestamp}/
+├── discovery_user_snapshot.json    # Hardware/benchmark data (2.7KB)
 ├── checkpoints/
-│   ├── model_weights.pth (77MB)
-│   └── training_stats.json (303 bytes)
+│   ├── model_weights.pth          # Trained model (77MB)
+│   └── training_stats.json        # Training metrics (303 bytes)
 └── logs/
-    ├── ddp-training-task-0-0-0-pnqfr.log (8.7KB, 109 lines)
-    └── combined.log (8.8KB, 110 lines)
+    ├── ddp-training-task-0-0-ghi789.log  # Individual pod log (8.7KB)
+    └── combined.log                      # Combined logs (8.8KB)
 ```
 
-**training_stats.json:**
+### Training statistics example
+
+**File:** `checkpoints/training_stats.json`
 ```json
 {
   "dataset": "mnist",
@@ -387,35 +488,41 @@ oc run check-results --rm -i --restart=Never --image=ubi9/ubi-minimal -n researc
   "num_gpus": 2,
   "time_seconds": 116.05,
   "final_loss": 0.111,
-  "accuracy": 94.55%,
-  "model_params": 20,037,642,
+  "accuracy": 94.55,
+  "model_params": 20037642,
   "input_dim": 784,
   "output_dim": 10
 }
 ```
 
-**Key Achievements:**
-- ✓ Results successfully saved to persistent storage
-- ✓ Training completed in ~2 minutes with 94.55% accuracy
-- ✓ Model weights (77MB) and stats saved to PVC
-- ✓ Discovery snapshot with hardware benchmarks saved
-- ✓ Training logs captured and saved to PVC
-- ✓ ConfigMap-based file injection working (train.py, model_config.json)
-- ✓ Multiple files support verified
+**Result:** When training completes, you should see results like 94.55% accuracy achieved in ~2 minutes.
 
 ---
 
-## Step 12: Cleanup Job Resources ✓
+## C7: Cleanup Resources
 
-**What we did:** Cleaned up Kubernetes resources while preserving results in PVC.
+**What:** Delete the JobSet and associated Kubernetes resources.
+
+**Why:** Free up cluster resources while preserving results in persistent storage.
 
 **Command:**
 ```bash
-cd output/ddp-training-job
 ./cleanup.sh
 ```
 
-**Result:**
+**This will delete:**
+- JobSet: `ddp-training`
+- All Jobs and Pods (cascading delete)
+- ConfigMap: `ddp-training-files` (injected files)
+- Services (if any were created)
+
+**This will preserve:**
+- All results in PVC (`researcher-a-storage`)
+- Discovery snapshots
+- Model weights and checkpoints
+- Training logs and statistics
+
+**Output:**
 ```
 Cleaning up resources for job: ddp-training
 Deleting JobSet...
@@ -427,37 +534,51 @@ configmap "ddp-training-files" deleted
 Cleanup complete!
 ```
 
-**Resources deleted:**
-- ✓ JobSet: ddp-training
-- ✓ All Jobs and Pods (cascading delete from JobSet)
-- ✓ ConfigMap: ddp-training-files
-- ✓ Services (if any were created)
-
-**Resources preserved:**
-- ✓ All results in PVC remain intact
-- ✓ Discovery snapshot, model weights, training stats, and logs all preserved
-
 **Verification:**
 ```bash
-oc get jobset,job,pod,configmap -n researcher-a | grep ddp-training
+kubectl get jobset,job,pod,configmap -n researcher-a | grep ddp-training
 # Output: No resources found (all cleaned up)
+
+kubectl get pvc -n researcher-a
+# Output: researcher-a-storage still exists with all results intact
 ```
+
+**Result:** Cluster resources are now cleaned up, with all results preserved in your PVC.
 
 ---
 
-## Summary
+# Summary
 
-**Complete workflow successfully demonstrated:**
-1. ✓ Cluster and project setup with Kueue queuing
-2. ✓ User RBAC for regular users to submit jobs
-3. ✓ Job generation with ConfigMap file injection
-4. ✓ Discovery snapshot with hardware benchmarks
-5. ✓ PyTorch DDP training on 2 GPUs (94.55% accuracy)
-6. ✓ Results saved to persistent storage
-7. ✓ Logs captured and saved to PVC
-8. ✓ Clean resource cleanup preserving all results
+## Complete Workflow Summary
 
-**Final directory structure in PVC:**
+By following this guide, you will have:
+
+### Part A: Setup
+- Created a virtual environment with uv
+- Installed Coldpress CLI tools
+
+### Part B: Admin Configuration
+- Configured cluster-wide Kueue resources
+- Set up project namespace with storage and queueing
+- Configured user RBAC for job submission
+
+### Part C: User Workflow
+1. Generated job manifests from specification
+2. Submitted JobSet to cluster
+3. Monitored job progress
+4. Captured and saved logs
+5. Explored results in persistent storage
+6. Cleaned up Kubernetes resources
+
+## Final Results
+
+**Training job:**
+- Dataset: MNIST
+- Configuration: 2 GPUs, 50 epochs, batch size 128
+- Performance: 94.55% accuracy in 116 seconds
+- Model size: 77MB (20M parameters)
+
+**Persistent storage structure:**
 ```
 /data/researcher-a/coldpress_results/ddp-training-{uid}-{timestamp}/
 ├── discovery_user_snapshot.json    # Hardware/benchmark data
@@ -466,5 +587,34 @@ oc get jobset,job,pod,configmap -n researcher-a | grep ddp-training
 │   └── training_stats.json        # Training metrics
 └── logs/
     ├── {pod-name}.log             # Individual pod logs
-    └── combined.log               # Combined logs from all pods
+    └── combined.log               # Combined logs
 ```
+
+## Key Features Validated
+
+- Cluster setup with Kueue queueing
+- GPU allocation and node selection
+- Job dependencies (mkdir → discovery → training)
+- File injection via ConfigMap (train.py, model_config.json)
+- Hardware discovery and benchmarking
+- Persistent result storage
+- Log capture to PVC
+- Clean resource cleanup
+- User RBAC for regular users
+
+---
+
+## Next Steps
+
+**For new workloads:**
+1. Create a job specification in `examples/your-workload/`
+2. Run `coldpress generate --config examples/your-workload/config.yaml`
+3. Follow the user workflow (Part C) to run your job
+
+**For additional users:**
+1. Create a user config in `users/username.yaml`
+2. Apply with `coldpress-setup apply user username.yaml`
+
+**For additional projects:**
+1. Create a project config in `projects/project-name.yaml`
+2. Apply with `coldpress-setup apply project project-name.yaml`

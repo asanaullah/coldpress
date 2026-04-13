@@ -11,17 +11,19 @@ One-page reference for getting started with Coldpress.
 # Clone and setup
 cd /path/to/coldpress
 ./setup-env.sh
-source venv/bin/activate
+source .venv/bin/activate
 ```
+
+The setup script uses `uv` for fast package installation.
 
 ### 1. Configure Cluster (One-time)
 
 ```bash
-# Edit cluster-config.yaml with your nodes and namespaces
-vim cluster-config.yaml
+# Edit your cluster config YAML
+vim my-cluster-config.yaml
 
-# Apply configuration
-coldpress-setup apply cluster-config.yaml
+# Apply configuration (subcommand specifies config type)
+coldpress-setup apply cluster my-cluster-config.yaml
 
 # Verify
 oc get nodes --show-labels | grep coldpress
@@ -94,9 +96,9 @@ Cleanup:
 
 ### Config
 ```bash
-coldpress-setup apply cluster-config.yaml              # Apply config
-coldpress-setup apply cluster-config.yaml --dry-run    # Test only
-coldpress-setup apply cluster-config.yaml -o out.yaml  # Generate to file
+coldpress-setup apply cluster cluster-config.yaml              # Apply config
+coldpress-setup apply cluster cluster-config.yaml --dry-run    # Test only
+coldpress-setup apply cluster cluster-config.yaml -o out.yaml  # Generate to file
 ```
 
 ### Generate
@@ -116,8 +118,8 @@ oc logs -f <pod-name> -n researcher-a      # View logs
 ```bash
 # 1. Setup (once)
 ./setup-env.sh
-source venv/bin/activate
-coldpress-setup apply cluster-config.yaml
+source .venv/bin/activate
+coldpress-setup apply cluster cluster-config.yaml
 
 # 2. Use existing example or create your own
 # Examples are in examples/ directory with config.yaml + job-spec.yaml
@@ -146,13 +148,13 @@ cd vllm-benchmark-job/
 
 **Command not found:**
 ```bash
-source venv/bin/activate
+source .venv/bin/activate
 ```
 
 **No nodes found:**
 ```bash
 oc get nodes --show-labels | grep coldpress
-# Rerun: coldpress-setup apply cluster-config.yaml
+# Rerun: coldpress-setup apply cluster cluster-config.yaml
 ```
 
 **JobSet stuck:**
@@ -224,13 +226,18 @@ namespaces:
 EOF
 
 # Apply configuration
-coldpress-setup apply cluster-config.yaml
+coldpress-setup apply cluster cluster-config.yaml
+
+# Note: Config files can be stored anywhere - the subcommand specifies the type
+# coldpress-setup apply cluster <any-path>/cluster.yaml
+# coldpress-setup apply project <any-path>/project.yaml
+# coldpress-setup apply user <any-path>/user.yaml
 
 # Or generate manifests to file
-coldpress-setup apply cluster-config.yaml -o manifests.yaml
+coldpress-setup apply cluster cluster-config.yaml -o manifests.yaml
 
 # Dry run
-coldpress-setup apply cluster-config.yaml --dry-run
+coldpress-setup apply cluster cluster-config.yaml --dry-run
 ```
 
 **Verify:**
@@ -355,12 +362,12 @@ All job metadata and results are stored in the PVC mounted at `/results`. Use `e
 1. **Install Coldpress 2.0:**
 ```bash
 ./setup-env.sh
-source venv/bin/activate
+source .venv/bin/activate
 ```
 
 2. **Configure cluster:**
 ```bash
-coldpress-setup apply cluster-config.yaml
+coldpress-setup apply cluster cluster-config.yaml
 ```
 
 3. **Convert old job specs:**
@@ -427,7 +434,8 @@ examples/            # Example workloads
     ├── config.yaml
     └── job-spec.yaml
 
-setup.py             # Package setup
+pyproject.toml       # Package configuration (modern Python packaging)
+setup.py             # Package setup (legacy, for backward compatibility)
 cluster-config.yaml  # Cluster configuration
 ```
 

@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from .allocator import allocate_node
 from .generator import generate_jobset, jobset_to_yaml, services_to_yaml
 from .script_gen import write_scripts
+from .model import validate_config, validate_project_config, validate_task_specs
+from pydantic import ValidationError
 
 # Default directories (can be overridden with environment variables)
 DISCOVERY_DIR = os.getenv("COLDPRESS_DISCOVERY_DIR", "discovery")
@@ -18,10 +20,205 @@ OUTPUT_DIR = os.getenv("COLDPRESS_OUTPUT_DIR", "output")
 
 
 @click.group()
-@click.version_option(version="2.0.0")
+@click.version_option(version="0.2.0")
 def cli():
     """Coldpress - AI/HPC workload orchestration for Kubernetes/OpenShift."""
     pass
+
+
+def _load_and_validate_config(
+    config_path, project_override, discovery_override, output_override
+):
+    """Load and validate configuration from file and CLI args."""
+    with open(config_path, "r") as f:
+        config_data = yaml.safe_load(f)
+
+    # Validate config schema
+    try:
+        validated_config = validate_config(config_data)
+    except ValidationError as e:
+        raise ValueError(f"Config validation failed: {e}") from e
+
+    config_dir = os.path.dirname(os.path.abspath(config_path))
+    project = project_override or validated_config.project
+    discovery = discovery_override or validated_config.discovery
+    output_name = output_override or validated_config.output
+
+    if not project:
+        raise ValueError("Must provide --project or specify 'project' in config")
+
+    return config_data, config_dir, project, discovery, output_name
+
+
+def _load_task_specs(config_dir):
+    """Load and validate task specifications from job-spec.yaml."""
+    job_spec_path = os.path.join(config_dir, "job-spec.yaml")
+    if not os.path.exists(job_spec_path):
+        raise FileNotFoundError(f"Could not find job-spec.yaml in {config_dir}")
+
+    with open(job_spec_path, "r") as f:
+        task_specs_data = list(yaml.safe_load_all(f))
+
+    if not task_specs_data:
+        raise ValueError("Job spec file is empty")
+
+    # Validate task specifications
+    try:
+        validated_tasks = validate_task_specs(task_specs_data)
+    except ValidationError as e:
+        raise ValueError(f"Task spec validation failed: {e}") from e
+
+    # Convert back to dict for compatibility with rest of code
+    return [
+        task.model_dump(by_alias=True, exclude_none=True) for task in validated_tasks
+    ]
+
+
+def _determine_job_name(task_specs):
+    """Determine job name from task specifications."""
+    if len(task_specs) == 1:
+        return task_specs[0]["name"]
+    return f"{task_specs[0]['name']}-workflow"
+
+
+def _load_project_config(project_name):
+    """Load project configuration file."""
+    project_config_file = os.path.join(PROJECT_DIR, f"{project_name}.yaml")
+    if not os.path.exists(project_config_file):
+        raise FileNotFoundError(f"Project config not found: {project_config_file}")
+
+    with open(project_config_file, "r") as f:
+        project_config_data = yaml.safe_load(f)
+
+    # Validate project config
+    try:
+        validated_project = validate_project_config(project_config_data)
+    except ValidationError as e:
+        raise ValueError(f"Project config validation failed: {e}") from e
+
+    # Convert back to dict for compatibility
+    project_config = validated_project.model_dump(by_alias=True, exclude_none=True)
+    namespace = validated_project.namespace
+
+    return project_config, namespace
+
+
+def _prepare_configmap_files(config_dir, files_list, job_name):
+    """Read and prepare files for ConfigMap."""
+    if not files_list:
+        return None
+
+    configmap_name = f"{job_name}-files"
+    file_data = {}
+    for file_name in files_list:
+        file_path = os.path.join(config_dir, file_name)
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+        with open(file_path, "r") as f:
+            file_data[file_name] = f.read()
+
+    return {
+        "name": configmap_name,
+        "files": list(file_data.keys()),
+        "data": file_data,
+    }
+
+
+def _allocate_nodes_for_tasks(task_specs, manual_nodes):
+    """Allocate nodes for each task."""
+    node_assignments = {}
+
+    if manual_nodes:
+        for task_id, node_id in enumerate(manual_nodes):
+            if task_id < len(task_specs):
+                node_assignments[task_id] = node_id
+        return node_assignments
+
+    for task_id, task in enumerate(task_specs):
+        req_gpus = sum(
+            int(
+                container.get("resources", {})
+                .get("requests", {})
+                .get("nvidia.com/gpu", "0")
+            )
+            for container in task.get("containers", [])
+        )
+        req_nics = task.get("roce_nics", 0)
+        allocated_node = allocate_node(req_gpus, req_nics)
+        node_assignments[task_id] = int(allocated_node)
+
+    return node_assignments
+
+
+def _write_output_files(
+    output_dir,
+    jobset,
+    services,
+    job_spec,
+    base_dir,
+    config_dir,
+    task_specs,
+    node_assignments,
+):
+    """Write all generated files to output directory."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Write JobSet YAML
+    jobset_file = os.path.join(output_dir, "jobset.yaml")
+    with open(jobset_file, "w") as f:
+        f.write(jobset_to_yaml(jobset))
+
+    # Write Services YAML if any
+    if services:
+        services_file = os.path.join(output_dir, "services.yaml")
+        with open(services_file, "w") as f:
+            f.write(services_to_yaml(services))
+
+    # Copy ConfigMap files
+    configmap_name = None
+    configmap_files = []
+    if "configmap" in job_spec:
+        import shutil
+
+        cm_info = job_spec["configmap"]
+        configmap_name = cm_info["name"]
+        for file_name in cm_info["files"]:
+            src_path = os.path.join(config_dir, file_name)
+            dst_path = os.path.join(output_dir, file_name)
+            shutil.copy(src_path, dst_path)
+            configmap_files.append(file_name)
+
+    # Write metadata
+    metadata = {
+        "job_name": job_spec["name"],
+        "namespace": job_spec["namespace"],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "base_dir": base_dir,
+        "node_assignments": node_assignments,
+        "tasks": [
+            {"name": t.get("name"), "containers": len(t.get("containers", []))}
+            for t in task_specs
+        ],
+    }
+    metadata_file = os.path.join(output_dir, "metadata.json")
+    with open(metadata_file, "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    # Generate bash scripts
+    storage_pvc = job_spec.get("storage", {}).get(
+        "results", f"{job_spec['namespace']}-storage"
+    )
+    write_scripts(
+        output_dir,
+        job_spec["name"],
+        job_spec["namespace"],
+        storage_pvc,
+        base_dir,
+        configmap_name,
+        configmap_files,
+    )
+
+    return output_dir
 
 
 @cli.command()
@@ -45,10 +242,7 @@ def cli():
     type=str,
 )
 @click.option(
-    "-o",
-    "--output",
-    help="Override output directory from config",
-    type=click.Path(),
+    "-o", "--output", help="Override output directory from config", type=click.Path()
 )
 @click.option(
     "--node",
@@ -79,253 +273,105 @@ def generate(config, project, discovery, output, node, file):
         coldpress generate -c examples/vllm_guidellm_benchmark/config.yaml -p different-project
         coldpress generate -c my-workflow/config.yaml -o custom-output
     """
-    # Load config file
-    with open(config, "r") as f:
-        config_data = yaml.safe_load(f)
-
-    # Get config directory for resolving relative paths
-    config_dir = os.path.dirname(os.path.abspath(config))
-
-    # Override with config values (CLI args take precedence)
-    project = project or config_data.get("project")
-    discovery = discovery or config_data.get("discovery")
-    output_name = output or config_data.get(
-        "output"
-    )  # Get output name from config or CLI
-    # Note: output path will be set after job_name is determined
-
-    # Validate required parameters
-    if not project:
-        click.echo(
-            "Error: Must provide --project or specify 'project' in config", err=True
+    try:
+        config_data, config_dir, project, discovery, output_name = (
+            _load_and_validate_config(config, project, discovery, output)
         )
-        return 1
+        task_specs = _load_task_specs(config_dir)
+        job_name = _determine_job_name(task_specs)
+        output_path = os.path.join(OUTPUT_DIR, output_name or job_name)
 
-    # Auto-discover job-spec.yaml in the same directory as config.yaml
-    job_spec_path = os.path.join(config_dir, "job-spec.yaml")
-    if not os.path.exists(job_spec_path):
-        click.echo(f"Error: Could not find job-spec.yaml in {config_dir}", err=True)
-        click.echo(f"Expected: {job_spec_path}", err=True)
-        return 1
+        project_config, namespace = _load_project_config(project)
 
-    # Load job spec(s) - supports multiple YAML documents separated by ---
-    with open(job_spec_path, "r") as f:
-        task_specs = list(yaml.safe_load_all(f))
-
-    if not task_specs:
-        click.echo("Error: Job spec file is empty", err=True)
-        return 1
-
-    # Validate all task specs
-    for i, task_spec in enumerate(task_specs):
-        if not task_spec.get("name"):
-            click.echo(f"Error: Task {i} must include 'name'", err=True)
-            return 1
-        if not task_spec.get("containers"):
-            click.echo(
-                f"Error: Task {i} ({task_spec.get('name')}) must include 'containers'",
-                err=True,
-            )
-            return 1
-
-    # Use first task's name as job name, or combine if multiple
-    if len(task_specs) == 1:
-        job_name = task_specs[0]["name"]
-    else:
-        # Multi-task: use combined name or first task name
-        job_name = f"{task_specs[0]['name']}-workflow"
-
-    # Set output directory (always in OUTPUT_DIR subdirectory)
-    output = os.path.join(OUTPUT_DIR, output_name or job_name)
-
-    # Build job spec with tasks array (preserves document order)
-    job_spec = {"name": job_name, "tasks": task_specs}
-
-    # Load project configuration
-    project_config_file = os.path.join(PROJECT_DIR, f"{project}.yaml")
-    if not os.path.exists(project_config_file):
-        click.echo(f"Error: Project config not found: {project_config_file}", err=True)
-        click.echo(f"Create a project config file at: {project_config_file}", err=True)
-        return 1
-
-    with open(project_config_file, "r") as f:
-        project_config = yaml.safe_load(f)
-
-    # Inject namespace and storage from project config into job spec
-    namespace = project_config.get("namespace")
-    if not namespace:
-        click.echo("Error: Project config must include 'namespace'", err=True)
-        return 1
-
-    job_spec["namespace"] = namespace
-    job_spec["storage"] = project_config.get("storage", {})
-
-    # Inject discovery template if specified
-    if discovery:
-        discovery_template_path = f"{DISCOVERY_DIR}/{discovery}.yaml"
-        if not os.path.exists(discovery_template_path):
-            click.echo(
-                f"Error: Discovery template not found: {discovery_template_path}",
-                err=True,
-            )
-            return 1
-        job_spec["discovery"] = {"template": discovery_template_path}
-
-    # Handle files for ConfigMap if specified (merge config and CLI)
-    files_list = list(config_data.get("files", []))
-    if file:
-        files_list.extend(file)
-
-    if files_list:
-        configmap_name = f"{job_name}-files"
-        # Read files from config directory
-        file_data = {}
-        for file_name in files_list:
-            file_path = os.path.join(config_dir, file_name)
-            if not os.path.exists(file_path):
-                click.echo(f"Error: File not found: {file_path}", err=True)
-                return 1
-            with open(file_path, "r") as f:
-                file_data[file_name] = f.read()
-
-        # Add ConfigMap info to job spec (will be used by generator)
-        job_spec["configmap"] = {
-            "name": configmap_name,
-            "files": list(file_data.keys()),
-            "data": file_data,
+        # Build job spec
+        job_spec = {
+            "name": job_name,
+            "tasks": task_specs,
+            "namespace": namespace,
+            "storage": project_config.get("storage", {}),
         }
 
-    click.echo(f"Generating JobSet for: {job_name}")
-    click.echo(f"Project: {project}")
-    click.echo(f"Namespace: {namespace}")
-    if discovery:
-        click.echo(f"Discovery: {discovery}")
-    click.echo(f"Tasks: {len(task_specs)}")
-
-    # Allocate nodes for each task
-    node_assignments = {}
-    if node:
-        # Manual node assignment
-        for task_id, node_id in enumerate(node):
-            if task_id < len(task_specs):
-                node_assignments[task_id] = node_id
-        click.echo(f"Using manual node assignments: {dict(node_assignments)}")
-    else:
-        # Automatic allocation
-        click.echo("Allocating nodes based on cluster state...")
-        for task_id, task in enumerate(task_specs):
-            # Extract GPU count from container resources (sum across all containers)
-            req_gpus = 0
-            containers = task.get("containers", [])
-            for container in containers:
-                gpu_str = (
-                    container.get("resources", {})
-                    .get("requests", {})
-                    .get("nvidia.com/gpu", "0")
+        # Add discovery template
+        if discovery:
+            discovery_template_path = f"{DISCOVERY_DIR}/{discovery}.yaml"
+            if not os.path.exists(discovery_template_path):
+                raise FileNotFoundError(
+                    f"Discovery template not found: {discovery_template_path}"
                 )
-                req_gpus += int(gpu_str)
+            job_spec["discovery"] = {"template": discovery_template_path}
 
-            req_nics = task.get("roce_nics", 0)
+        # Prepare ConfigMap files
+        files_list = list(config_data.get("files", [])) + list(file)
+        configmap_info = _prepare_configmap_files(config_dir, files_list, job_name)
+        if configmap_info:
+            job_spec["configmap"] = configmap_info
 
-            try:
-                allocated_node = allocate_node(req_gpus, req_nics)
-                node_assignments[task_id] = int(allocated_node)
+        # Display generation info
+        click.echo(f"Generating JobSet for: {job_name}")
+        click.echo(f"Project: {project}")
+        click.echo(f"Namespace: {namespace}")
+        if discovery:
+            click.echo(f"Discovery: {discovery}")
+        click.echo(f"Tasks: {len(task_specs)}")
+
+        # Allocate nodes
+        if node:
+            node_assignments = {i: n for i, n in enumerate(node) if i < len(task_specs)}
+            click.echo(f"Using manual node assignments: {node_assignments}")
+        else:
+            click.echo("Allocating nodes based on cluster state...")
+            node_assignments = _allocate_nodes_for_tasks(task_specs, None)
+            for task_id, task in enumerate(task_specs):
+                allocated_node = node_assignments[task_id]
+                req_gpus = sum(
+                    int(
+                        c.get("resources", {})
+                        .get("requests", {})
+                        .get("nvidia.com/gpu", "0")
+                    )
+                    for c in task.get("containers", [])
+                )
                 click.echo(
                     f"  Task {task_id} ({task.get('name', f'task-{task_id}')}) → Node {allocated_node} (GPUs: {req_gpus})"
                 )
-            except Exception as e:
-                click.echo(f"Error allocating node for task {task_id}: {e}", err=True)
-                return 1
 
-    # Generate JobSet
-    try:
+        # Generate JobSet
         jobset, services, base_dir = generate_jobset(job_spec, node_assignments)
+
+        # Write all output files
+        output_path = _write_output_files(
+            output_path,
+            jobset,
+            services,
+            job_spec,
+            base_dir,
+            config_dir,
+            task_specs,
+            node_assignments,
+        )
+
+        click.echo(f"\nJob manifest generated successfully in: {output_path}/")
+        click.echo("\nTo run the job:")
+        click.echo(f"  cd {output_path}")
+        click.echo("  ./run.sh")
+        click.echo("\nTo monitor:")
+        click.echo("  ./monitor.sh")
+        click.echo("\nTo explore results:")
+        click.echo("  ./explore.sh")
+        click.echo("\nTo cleanup:")
+        click.echo("  ./cleanup.sh")
+
+        return 0
+
+    except (ValueError, FileNotFoundError) as e:
+        click.echo(f"Error: {e}", err=True)
+        return 1
     except Exception as e:
         click.echo(f"Error generating JobSet: {e}", err=True)
         import traceback
 
         traceback.print_exc()
         return 1
-
-    # Create output directory
-    os.makedirs(output, exist_ok=True)
-
-    # Write JobSet YAML
-    jobset_file = os.path.join(output, "jobset.yaml")
-    with open(jobset_file, "w") as f:
-        f.write(jobset_to_yaml(jobset))
-    click.echo(f"Generated: {jobset_file}")
-
-    # Write Services YAML if any
-    if services:
-        services_file = os.path.join(output, "services.yaml")
-        with open(services_file, "w") as f:
-            f.write(services_to_yaml(services))
-        click.echo(f"Generated: {services_file}")
-
-    # Copy files to output directory if specified
-    configmap_name = None
-    configmap_files = []
-    if "configmap" in job_spec:
-        import shutil
-
-        cm_info = job_spec["configmap"]
-        configmap_name = cm_info["name"]
-
-        # Copy files to output directory
-        for file_name in cm_info["files"]:
-            src_path = os.path.join(config_dir, file_name)
-            dst_path = os.path.join(output, file_name)
-            shutil.copy(src_path, dst_path)
-            configmap_files.append(file_name)
-            click.echo(f"Copied: {dst_path}")
-
-    # Write metadata
-    metadata = {
-        "job_name": job_name,
-        "namespace": namespace,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "base_dir": base_dir,
-        "node_assignments": node_assignments,
-        "tasks": [
-            {"name": t.get("name"), "containers": len(t.get("containers", []))}
-            for t in task_specs
-        ],
-    }
-    metadata_file = os.path.join(output, "metadata.json")
-    with open(metadata_file, "w") as f:
-        json.dump(metadata, f, indent=2)
-    click.echo(f"Generated: {metadata_file}")
-
-    # Generate bash scripts
-    storage_pvc = job_spec.get("storage", {}).get("results", f"{namespace}-storage")
-    write_scripts(
-        output,
-        job_name,
-        namespace,
-        storage_pvc,
-        base_dir,
-        configmap_name,
-        configmap_files,
-    )
-    click.echo(f"Generated: {output}/run.sh")
-    click.echo(f"Generated: {output}/cleanup.sh")
-    click.echo(f"Generated: {output}/monitor.sh")
-    click.echo(f"Generated: {output}/logs.sh")
-    click.echo(f"Generated: {output}/explore.sh")
-
-    click.echo(f"\nJob manifest generated successfully in: {output}/")
-    click.echo("\nTo run the job:")
-    click.echo(f"  cd {output}")
-    click.echo("  ./run.sh")
-    click.echo("\nTo monitor:")
-    click.echo("  ./monitor.sh")
-    click.echo("\nTo explore results:")
-    click.echo("  ./explore.sh")
-    click.echo("\nTo cleanup:")
-    click.echo("  ./cleanup.sh")
-
-    return 0
 
 
 if __name__ == "__main__":

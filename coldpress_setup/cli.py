@@ -4,23 +4,62 @@
 import click
 import yaml
 import os
-from kubernetes import client, config as k8s_config
+import subprocess
+import shutil
 
 from .generator import manifests_to_yaml
 
 # Default directories (can be overridden with environment variables)
 PROJECT_DIR = os.getenv("COLDPRESS_PROJECT_DIR", "projects")
+CLUSTER_DIR = os.getenv("COLDPRESS_CLUSTER_DIR", "cluster")
+USER_DIR = os.getenv("COLDPRESS_USER_DIR", "users")
+
+
+def _resolve_config_path(config_file, config_type):
+    """Resolve config file path by checking standard directories."""
+    # If file exists as-is, use it
+    if os.path.exists(config_file):
+        return config_file
+
+    # Otherwise, check in the standard directory for this config type
+    standard_dirs = {
+        "cluster": CLUSTER_DIR,
+        "project": PROJECT_DIR,
+        "user": USER_DIR,
+    }
+
+    if config_type in standard_dirs:
+        dir_path = standard_dirs[config_type]
+        full_path = os.path.join(dir_path, config_file)
+        if os.path.exists(full_path):
+            return full_path
+
+    # If not found, return original (will fail with helpful error)
+    return config_file
 
 
 @click.group()
-@click.version_option(version="2.0.0")
+@click.version_option(version="0.2.0")
 def cli():
     """Coldpress Setup - One-time cluster setup and configuration."""
     pass
 
 
-@cli.command()
-@click.argument("config_file", type=click.Path(exists=True))
+@cli.group()
+def apply():
+    """
+    Apply cluster, project, or user configuration.
+
+    Use subcommands to specify the type of configuration:
+        coldpress-setup apply cluster <config.yaml>
+        coldpress-setup apply project <config.yaml>
+        coldpress-setup apply user <config.yaml>
+    """
+    pass
+
+
+@apply.command()
+@click.argument("config_file", type=click.Path())
 @click.option(
     "--output",
     "-o",
@@ -30,111 +69,182 @@ def cli():
 @click.option(
     "--dry-run", is_flag=True, help="Generate manifests but don't apply to cluster"
 )
-def apply(config_file, output, dry_run):
+def cluster(config_file, output, dry_run):
     """
-    Apply cluster, project, or user configuration.
+    Apply cluster-wide configuration.
 
     Cluster config: YAML file with Kueue/JobSet operators and resources (apply as-is)
+
+    Examples:
+        coldpress-setup apply cluster ocp-test-nerc-mghpcc.yaml
+        coldpress-setup apply cluster ocp-test-nerc-mghpcc.yaml --dry-run
+    """
+    # Resolve config file path
+    config_file = _resolve_config_path(config_file, "cluster")
+    if not os.path.exists(config_file):
+        click.echo(f"Error: Config file not found: {config_file}", err=True)
+        return 1
+
+    return apply_cluster_config(config_file, output, dry_run)
+
+
+@apply.command()
+@click.argument("config_file", type=click.Path())
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    help="Output manifests to file instead of applying to cluster",
+)
+@click.option(
+    "--dry-run", is_flag=True, help="Generate manifests but don't apply to cluster"
+)
+def project(config_file, output, dry_run):
+    """
+    Apply project configuration.
+
     Project config: Generate namespace resources (Namespace, PVC, LocalQueue, RBAC)
+
+    Examples:
+        coldpress-setup apply project researcher-a.yaml
+        coldpress-setup apply project researcher-a.yaml --dry-run
+    """
+    # Resolve config file path
+    config_file = _resolve_config_path(config_file, "project")
+    if not os.path.exists(config_file):
+        click.echo(f"Error: Config file not found: {config_file}", err=True)
+        return 1
+
+    # Load project config
+    with open(config_file, "r") as f:
+        config = yaml.safe_load(f)
+
+    if "namespace" not in config:
+        click.echo("Error: Project config must include 'namespace'", err=True)
+        return 1
+
+    return apply_project_config(config, output, dry_run)
+
+
+@apply.command()
+@click.argument("config_file", type=click.Path())
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    help="Output manifests to file instead of applying to cluster",
+)
+@click.option(
+    "--dry-run", is_flag=True, help="Generate manifests but don't apply to cluster"
+)
+def user(config_file, output, dry_run):
+    """
+    Apply user configuration.
+
     User config: Generate user RBAC (RoleBindings across namespaces)
 
     Examples:
-        coldpress-setup apply cluster/ocp-test-nerc-mghpcc.yaml
-        coldpress-setup apply projects/researcher-a.yaml
-        coldpress-setup apply users/asanaullah.yaml
-        coldpress-setup apply projects/researcher-a.yaml --dry-run
+        coldpress-setup apply user asanaullah.yaml
+        coldpress-setup apply user asanaullah.yaml --dry-run
     """
-    # Detect config type by checking directory
-    is_cluster_config = "/cluster/" in config_file or config_file.startswith("cluster/")
-    is_user_config = "/users/" in config_file or config_file.startswith("users/")
+    # Resolve config file path
+    config_file = _resolve_config_path(config_file, "user")
+    if not os.path.exists(config_file):
+        click.echo(f"Error: Config file not found: {config_file}", err=True)
+        return 1
 
-    # Load kubeconfig
-    try:
-        k8s_config.load_incluster_config()
-    except Exception:
-        k8s_config.load_kube_config()
+    # Load user config
+    with open(config_file, "r") as f:
+        config = yaml.safe_load(f)
 
-    if is_cluster_config:
-        return apply_cluster_config(config_file, output, dry_run)
-    elif is_user_config:
-        # Load user config
-        with open(config_file, "r") as f:
-            config = yaml.safe_load(f)
+    if "username" not in config:
+        click.echo("Error: User config must include 'username'", err=True)
+        return 1
 
-        if "username" not in config:
-            click.echo("Error: User config must include 'username'", err=True)
-            return 1
-
-        return apply_user_config(config, output, dry_run)
-    else:
-        # Load project config
-        with open(config_file, "r") as f:
-            config = yaml.safe_load(f)
-
-        if "namespace" not in config:
-            click.echo("Error: Project config must include 'namespace'", err=True)
-            return 1
-
-        return apply_project_config(config, output, dry_run)
+    return apply_user_config(config, output, dry_run)
 
 
-def apply_cluster_config(config_file, output, dry_run):
-    """Apply cluster-wide configuration (operators and Kueue resources)."""
-    import subprocess
-    import shutil
-
-    click.echo("Applying cluster configuration...")
-    click.echo(f"Config file: {config_file}")
-
-    # If output specified, just copy the file
+def _handle_cluster_output(config_file, output, dry_run):
+    """Handle output and dry-run modes for cluster config."""
     if output:
-        import shutil
-
         shutil.copy(config_file, output)
         click.echo(f"\nCluster config copied to: {output}")
-        return 0
+        return True
 
     if dry_run:
         click.echo("\nDry run - would apply the following:")
         with open(config_file, "r") as f:
             click.echo(f.read())
-        return 0
+        return True
 
-    # Detect kubectl or oc
-    kubectl_cmd = "kubectl"
-    if shutil.which("oc"):
-        kubectl_cmd = "oc"
-    elif not shutil.which("kubectl"):
-        click.echo("Error: Neither kubectl nor oc found in PATH", err=True)
-        return 1
+    return False
 
-    click.echo(f"\nUsing {kubectl_cmd} to apply cluster config (as system:admin)...")
-    result = subprocess.run(
-        [kubectl_cmd, "apply", "--as", "system:admin", "-f", config_file],
-        capture_output=True,
-        text=True,
-    )
 
-    if result.returncode == 0:
-        click.echo(result.stdout)
-        click.echo("\nCluster configuration applied successfully!")
-        click.echo("\nResources created:")
-        click.echo("  - Kueue operator")
-        click.echo("  - JobSet operator")
-        click.echo("  - ResourceFlavors (node0, node1)")
-        click.echo("  - ClusterQueue (cluster-queue-coldpress)")
-    else:
-        click.echo(f"Error applying cluster config:\n{result.stderr}", err=True)
-        return 1
-
+def _print_cluster_success():
+    """Print success message and next steps for cluster config."""
+    click.echo("\nCluster configuration applied successfully!")
+    click.echo("\nResources created:")
+    click.echo("  - Kueue operator")
+    click.echo("  - JobSet operator")
+    click.echo("  - ResourceFlavors (node0, node1)")
+    click.echo("  - ClusterQueue (cluster-queue-coldpress)")
     click.echo("\nNext steps:")
     click.echo("  1. Verify: oc get clusterqueues")
     click.echo("  2. Verify: oc get resourceflavors")
     click.echo(
-        "  3. Apply project configs: coldpress-setup apply projects/<project>.yaml"
+        "  3. Apply project configs: coldpress-setup apply project <project-config.yaml>"
     )
 
-    return 0
+
+def apply_cluster_config(config_file, output, dry_run):
+    """Apply cluster-wide configuration (operators and Kueue resources)."""
+    click.echo("Applying cluster configuration...")
+    click.echo(f"Config file: {config_file}")
+
+    if _handle_cluster_output(config_file, output, dry_run):
+        return 0
+
+    try:
+        kubectl_cmd = _get_kubectl_cmd()
+        kubectl_flags = _get_kubectl_flags()
+
+        flags_msg = f" with flags: {' '.join(kubectl_flags)}" if kubectl_flags else ""
+        click.echo(f"\nUsing {kubectl_cmd} to apply cluster config{flags_msg}...")
+
+        cmd = [kubectl_cmd, "apply"] + kubectl_flags + ["-f", config_file]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            raise Exception(f"Error applying cluster config:\n{result.stderr}")
+
+        click.echo(result.stdout)
+        _print_cluster_success()
+        return 0
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        return 1
+
+
+def _generate_and_display_manifests(config, manifest_generator):
+    """Generate manifests and display summary."""
+    manifests = manifest_generator(config)
+
+    ns_count = len(manifests.get("namespaces", []))
+    kueue_count = len(manifests.get("kueue", []))
+    storage_count = len(manifests.get("storage", []))
+    rbac_count = len(manifests.get("rbac", []))
+
+    click.echo(f"  Namespace: {ns_count}")
+    click.echo(f"  LocalQueue: {kueue_count}")
+    click.echo(f"  PVC: {storage_count}")
+    click.echo(f"  RBAC: {rbac_count}")
+
+    return manifests
 
 
 def apply_project_config(config, output, dry_run):
@@ -148,22 +258,10 @@ def apply_project_config(config, output, dry_run):
 
     click.echo("Applying project configuration...")
     click.echo(f"Namespace: {namespace}")
-
-    # Generate manifests
     click.echo("\nGenerating project manifests...")
-    manifests = generate_project_manifests(config)
 
-    ns_count = len(manifests.get("namespaces", []))
-    kueue_count = len(manifests.get("kueue", []))
-    storage_count = len(manifests.get("storage", []))
-    rbac_count = len(manifests.get("rbac", []))
+    manifests = _generate_and_display_manifests(config, generate_project_manifests)
 
-    click.echo(f"  Namespace: {ns_count}")
-    click.echo(f"  LocalQueue: {kueue_count}")
-    click.echo(f"  PVC: {storage_count}")
-    click.echo(f"  RBAC: {rbac_count}")
-
-    # Output to file if requested
     if output:
         yaml_content = manifests_to_yaml(manifests)
         with open(output, "w") as f:
@@ -175,108 +273,108 @@ def apply_project_config(config, output, dry_run):
         click.echo("\nDry run complete (no changes applied)")
         return 0
 
-    # Apply manifests
     return apply_manifests_to_cluster(manifests, "project", namespace)
+
+
+def _validate_user_config(config):
+    """Validate user configuration."""
+    username = config.get("username")
+    namespaces = config.get("namespaces", [])
+
+    if not username:
+        raise ValueError("User config must include 'username'")
+    if not namespaces:
+        raise ValueError("User config must include 'namespaces' list")
+
+    return username, namespaces
 
 
 def apply_user_config(config, output, dry_run):
     """Apply user configuration (RBAC RoleBindings)."""
     from .generator import generate_user_rbac
 
-    username = config.get("username")
-    namespaces = config.get("namespaces", [])
+    try:
+        username, namespaces = _validate_user_config(config)
 
-    if not username:
-        click.echo("Error: User config must include 'username'", err=True)
+        click.echo("Applying user configuration...")
+        click.echo(f"Username: {username}")
+        click.echo(f"Namespaces: {', '.join(namespaces)}")
+
+        click.echo("\nGenerating user RBAC...")
+        rbac_manifests = generate_user_rbac(username, namespaces)
+        click.echo(f"  RoleBindings: {len(rbac_manifests)}")
+
+        manifests = {"rbac": rbac_manifests}
+
+        if output:
+            yaml_content = manifests_to_yaml(manifests)
+            with open(output, "w") as f:
+                f.write(yaml_content)
+            click.echo(f"\nManifests written to: {output}")
+            return 0
+
+        if dry_run:
+            click.echo("\nDry run complete (no changes applied)")
+            return 0
+
+        return apply_manifests_to_cluster(manifests, "user", username)
+
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
         return 1
 
-    if not namespaces:
-        click.echo("Error: User config must include 'namespaces' list", err=True)
-        return 1
 
-    click.echo("Applying user configuration...")
-    click.echo(f"Username: {username}")
-    click.echo(f"Namespaces: {', '.join(namespaces)}")
-
-    # Generate RBAC manifests
-    click.echo("\nGenerating user RBAC...")
-    rbac_manifests = generate_user_rbac(username, namespaces)
-    click.echo(f"  RoleBindings: {len(rbac_manifests)}")
-
-    manifests = {"rbac": rbac_manifests}
-
-    # Output to file if requested
-    if output:
-        yaml_content = manifests_to_yaml(manifests)
-        with open(output, "w") as f:
-            f.write(yaml_content)
-        click.echo(f"\nManifests written to: {output}")
-        return 0
-
-    if dry_run:
-        click.echo("\nDry run complete (no changes applied)")
-        return 0
-
-    # Apply manifests
-    return apply_manifests_to_cluster(manifests, "user", username)
-
-
-def apply_manifests_to_cluster(manifests, config_type, namespace=None):
-    """Apply manifests to cluster using oc/kubectl."""
-    import subprocess
-    import shutil
-
-    click.echo("\nApplying manifests...")
-    temp_file = "/tmp/coldpress-manifests.yaml"
-    yaml_content = manifests_to_yaml(manifests)
-
-    with open(temp_file, "w") as f:
-        f.write(yaml_content)
-
-    # Detect kubectl or oc
-    kubectl_cmd = "kubectl"
+def _get_kubectl_cmd():
+    """Detect kubectl or oc command."""
     if shutil.which("oc"):
-        kubectl_cmd = "oc"
-    elif not shutil.which("kubectl"):
-        click.echo("Error: Neither kubectl nor oc found in PATH", err=True)
-        return 1
+        return "oc"
+    elif shutil.which("kubectl"):
+        return "kubectl"
+    else:
+        raise Exception("Neither kubectl nor oc found in PATH")
 
-    click.echo(f"Using {kubectl_cmd} to apply manifests (as system:admin)...")
+
+def _get_kubectl_flags():
+    """Get additional kubectl/oc flags from environment variable."""
+    flags_str = os.getenv("COLDPRESS_OC_FLAGS", "")
+    if flags_str:
+        return flags_str.split()
+    return []
+
+
+def _apply_yaml_to_cluster(kubectl_cmd, yaml_content):
+    """Apply YAML content to cluster via stdin."""
+    kubectl_flags = _get_kubectl_flags()
+    cmd = [kubectl_cmd, "apply"] + kubectl_flags + ["-f", "-"]
     result = subprocess.run(
-        [kubectl_cmd, "apply", "--as", "system:admin", "-f", temp_file],
+        cmd,
+        input=yaml_content,
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0:
+        raise Exception(f"Error applying manifests:\n{result.stderr}")
+    return result.stdout
 
-    if result.returncode == 0:
-        click.echo(result.stdout)
-        click.echo("\nConfiguration applied successfully!")
-    else:
-        click.echo(f"Error applying manifests:\n{result.stderr}", err=True)
-        return 1
 
-    # Cleanup temp file
-    os.remove(temp_file)
-
-    # Summary
+def _print_config_summary(config_type, manifests, namespace):
+    """Print summary and next steps based on config type."""
     if config_type == "cluster":
         kueue_count = len(manifests.get("kueue", []))
         click.echo("\nCluster Configuration Summary:")
         click.echo(f"  Kueue resources: {kueue_count}")
-        click.echo("")
-        click.echo("Next steps:")
+        click.echo("\nNext steps:")
         click.echo("  1. Verify: oc get clusterqueues")
         click.echo("  2. Verify: oc get resourceflavors")
         click.echo(
-            "  3. Apply project configs: coldpress-setup apply projects/<project>.yaml"
+            "  3. Apply project configs: coldpress-setup apply project <project-config.yaml>"
         )
     elif config_type == "user":
         rbac_count = len(manifests.get("rbac", []))
         click.echo("\nUser Configuration Summary:")
-        click.echo(f"  Username: {namespace}")  # namespace param is reused for username
+        click.echo(f"  Username: {namespace}")
         click.echo(f"  RoleBindings: {rbac_count}")
-        click.echo("")
-        click.echo("Next steps:")
+        click.echo("\nNext steps:")
         click.echo("  1. User can now submit JobSets to granted namespaces")
         click.echo(
             "  2. Generate jobs: coldpress generate --config examples/job/config.yaml"
@@ -284,15 +382,104 @@ def apply_manifests_to_cluster(manifests, config_type, namespace=None):
     else:  # project
         click.echo("\nProject Configuration Summary:")
         click.echo(f"  Namespace: {namespace}")
-        click.echo("")
-        click.echo("Next steps:")
+        click.echo("\nNext steps:")
         click.echo(f"  1. Verify: oc get namespace {namespace}")
         click.echo(f"  2. Verify: oc get pvc -n {namespace}")
         click.echo(
-            "  3. Apply user configs: coldpress-setup apply users/<username>.yaml"
+            "  3. Apply user configs: coldpress-setup apply user <user-config.yaml>"
         )
 
-    return 0
+
+def apply_manifests_to_cluster(manifests, config_type, namespace=None):
+    """Apply manifests to cluster using oc/kubectl."""
+    try:
+        click.echo("\nApplying manifests...")
+        yaml_content = manifests_to_yaml(manifests)
+        kubectl_cmd = _get_kubectl_cmd()
+        kubectl_flags = _get_kubectl_flags()
+
+        flags_msg = f" with flags: {' '.join(kubectl_flags)}" if kubectl_flags else ""
+        click.echo(f"Using {kubectl_cmd} to apply manifests{flags_msg}...")
+        output = _apply_yaml_to_cluster(kubectl_cmd, yaml_content)
+
+        click.echo(output)
+        click.echo("\nConfiguration applied successfully!")
+
+        _print_config_summary(config_type, manifests, namespace)
+        return 0
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        return 1
+
+
+def _load_project_files():
+    """Load all project config files from PROJECT_DIR."""
+    if not os.path.exists(PROJECT_DIR):
+        raise FileNotFoundError(f"Project config directory not found: {PROJECT_DIR}")
+
+    project_files = [f for f in os.listdir(PROJECT_DIR) if f.endswith(".yaml")]
+    if not project_files:
+        raise ValueError(f"No project configs found in: {PROJECT_DIR}")
+
+    return sorted(project_files)
+
+
+def _verify_namespace(kubectl_cmd, namespace):
+    """Verify namespace exists in cluster."""
+    result = subprocess.run(
+        [kubectl_cmd, "get", "namespace", namespace],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def _verify_pvc(kubectl_cmd, pvc_name, namespace, pvc_type):
+    """Verify PVC exists in namespace."""
+    result = subprocess.run(
+        [kubectl_cmd, "get", "pvc", pvc_name, "-n", namespace],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return True, f"  PVC ({pvc_type}): {pvc_name}"
+    elif pvc_type == "models":
+        return True, f"  PVC ({pvc_type}): {pvc_name} (check if shared PVC exists)"
+    else:
+        return False, f"  PVC ({pvc_type}): {pvc_name} (NOT FOUND)"
+
+
+def _verify_project(kubectl_cmd, project_path):
+    """Verify a single project's resources."""
+    with open(project_path, "r") as f:
+        project_config = yaml.safe_load(f)
+
+    project_name = project_config.get("project")
+    namespace = project_config.get("namespace")
+    storage = project_config.get("storage", {})
+
+    click.echo(f"Project: {project_name}")
+    click.echo(f"  Config: {os.path.basename(project_path)}")
+
+    all_ok = True
+
+    # Check namespace
+    if _verify_namespace(kubectl_cmd, namespace):
+        click.echo(f"  Namespace: {namespace}")
+    else:
+        click.echo(f"  Namespace: {namespace} (NOT FOUND)", err=True)
+        all_ok = False
+
+    # Check PVCs
+    for pvc_type, pvc_name in storage.items():
+        pvc_ok, message = _verify_pvc(kubectl_cmd, pvc_name, namespace, pvc_type)
+        click.echo(message, err=not pvc_ok)
+        if not pvc_ok:
+            all_ok = False
+
+    click.echo("")
+    return all_ok
 
 
 @cli.command()
@@ -306,80 +493,38 @@ def verify():
         coldpress-setup verify
         COLDPRESS_PROJECT_DIR=/path/to/projects coldpress-setup verify
     """
-    # Load all project configs
-    if not os.path.exists(PROJECT_DIR):
-        click.echo(
-            f"Error: Project config directory not found: {PROJECT_DIR}", err=True
-        )
-        click.echo(
-            f"Set COLDPRESS_PROJECT_DIR environment variable or create {PROJECT_DIR}/",
-            err=True,
-        )
-        return 1
-
-    project_files = [f for f in os.listdir(PROJECT_DIR) if f.endswith(".yaml")]
-    if not project_files:
-        click.echo(f"No project configs found in: {PROJECT_DIR}", err=True)
-        return 1
-
-    click.echo(f"Verifying {len(project_files)} project(s) from {PROJECT_DIR}...\n")
-
-    # Load kubeconfig
     try:
-        k8s_config.load_incluster_config()
-    except Exception:
-        k8s_config.load_kube_config()
+        project_files = _load_project_files()
+        click.echo(f"Verifying {len(project_files)} project(s) from {PROJECT_DIR}...\n")
 
-    v1 = client.CoreV1Api()
+        kubectl_cmd = _get_kubectl_cmd()
+        all_ok = True
 
-    all_ok = True
-    for project_file in sorted(project_files):
-        project_path = os.path.join(PROJECT_DIR, project_file)
-        with open(project_path, "r") as f:
-            project_config = yaml.safe_load(f)
+        for project_file in project_files:
+            project_path = os.path.join(PROJECT_DIR, project_file)
+            if not _verify_project(kubectl_cmd, project_path):
+                all_ok = False
 
-        project_name = project_config.get("project")
-        namespace = project_config.get("namespace")
-        storage = project_config.get("storage", {})
+        if all_ok:
+            click.echo("All project resources verified successfully!")
+            return 0
+        else:
+            click.echo(
+                "Some resources are missing. Run 'coldpress-setup apply project <config>' to create them.",
+                err=True,
+            )
+            return 1
 
-        click.echo(f"Project: {project_name}")
-        click.echo(f"  Config: {project_file}")
-
-        # Check namespace
-        try:
-            v1.read_namespace(namespace)
-            click.echo(f"  ✓ Namespace: {namespace}")
-        except Exception:
-            click.echo(f"  ✗ Namespace: {namespace} (NOT FOUND)", err=True)
-            all_ok = False
-
-        # Check PVCs
-        for pvc_type, pvc_name in storage.items():
-            try:
-                v1.read_namespaced_persistent_volume_claim(pvc_name, namespace)
-                click.echo(f"  ✓ PVC ({pvc_type}): {pvc_name}")
-            except Exception:
-                # Check if it's a shared PVC in different namespace (like coldpress-model-storage)
-                if pvc_type == "models":
-                    click.echo(
-                        f"  ⚠ PVC ({pvc_type}): {pvc_name} (check if shared PVC exists)"
-                    )
-                else:
-                    click.echo(
-                        f"  ✗ PVC ({pvc_type}): {pvc_name} (NOT FOUND)", err=True
-                    )
-                    all_ok = False
-
-        click.echo("")
-
-    if all_ok:
-        click.echo("✓ All project resources verified successfully!")
-        return 0
-    else:
-        click.echo(
-            "✗ Some resources are missing. Run 'coldpress-setup apply' to create them.",
-            err=True,
-        )
+    except (FileNotFoundError, ValueError) as e:
+        click.echo(f"Error: {e}", err=True)
+        if isinstance(e, FileNotFoundError):
+            click.echo(
+                f"Set COLDPRESS_PROJECT_DIR environment variable or create {PROJECT_DIR}/",
+                err=True,
+            )
+        return 1
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
         return 1
 
 

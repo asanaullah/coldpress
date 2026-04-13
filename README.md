@@ -18,25 +18,35 @@ Coldpress simplifies running complex multi-task jobs on Kubernetes clusters with
 
 ```bash
 ./setup-env.sh
-source venv/bin/activate
+source .venv/bin/activate
 ```
+
+The setup script uses `uv` (fast Python package installer) and will install it automatically if not present.
+
+**Why uv?**
+- 10-100x faster than pip for package installation
+- Better dependency resolution
+- Built-in virtual environment management
+- Backward compatible with pip workflows
 
 ### 2. Configure Cluster (Admin)
 
 Apply cluster-wide configuration:
 ```bash
-coldpress-setup apply cluster/ocp-test-nerc-mghpcc.yaml
+coldpress-setup apply cluster cluster/ocp-test-nerc-mghpcc.yaml
 ```
 
 Apply project configuration:
 ```bash
-coldpress-setup apply projects/researcher-a.yaml
+coldpress-setup apply project projects/researcher-a.yaml
 ```
 
 Apply user RBAC:
 ```bash
-coldpress-setup apply users/asanaullah.yaml
+coldpress-setup apply user users/asanaullah.yaml
 ```
+
+**Note:** Config files can be stored anywhere - the subcommand (`cluster`, `project`, `user`) specifies the type.
 
 This creates:
 - Node labels (`coldpress.node=0`, `coldpress.node=1`)
@@ -117,22 +127,28 @@ coldpress/
 ├── coldpress/              # CLI: Job manifest generator
 ├── coldpress_setup/        # CLI: Cluster setup and configuration
 ├── discovery/              # Hardware discovery pod templates
-├── projects/               # Project configs (namespace, storage)
+├── projects/               # Example project configs (namespace, storage)
 ├── examples/               # Example workloads (config.yaml + job-spec.yaml)
-├── cluster/                # Cluster-wide configurations
-├── users/                  # User RBAC configurations
+├── cluster/                # Example cluster-wide configurations
+├── users/                  # Example user RBAC configurations
 ├── docs/                   # Documentation
-├── setup.py                # Package setup
-├── setup-env.sh            # Environment setup script
+├── pyproject.toml          # Package configuration (modern Python packaging)
+├── setup.py                # Package setup (legacy, for backward compatibility)
+├── setup-env.sh            # Environment setup script (uses uv)
 └── steps.md                # Complete tutorial walkthrough
 ```
 
 ## Requirements
 
+**Cluster:**
 - Kubernetes cluster (tested on OpenShift)
 - Kueue operator (for job queueing)
 - JobSet operator (for multi-task jobs)
-- Python 3.11+
+
+**Local development:**
+- Python 3.9+
+- `uv` (fast Python package installer - auto-installed by setup-env.sh)
+- **`kubectl` or `oc` CLI** (required for all cluster operations - must be installed separately)
 
 ## Environment Variables
 

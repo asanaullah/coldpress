@@ -49,6 +49,146 @@ def generate_base_dir(namespace, job_name):
     return f"{namespace}/coldpress_results/{job_name}-{uid}-{timestamp}"
 
 
+def _infer_blocking_type_and_health_check(task, task_id, job_id, namespace):
+    """Infer blocking type from readinessProbe if not explicitly set."""
+    if "blocking" in task:
+        return
+
+    containers = task.get("containers", [])
+    if containers and "readinessProbe" in containers[0]:
+        task["blocking"] = "endpoint"
+        probe = containers[0]["readinessProbe"]
+        if "httpGet" in probe:
+            http_get = probe["httpGet"]
+            path = http_get.get("path", "/")
+            port = http_get.get("port", 80)
+            scheme = http_get.get("scheme", "HTTP").lower()
+            service_name = f"s-{job_id}-{task_id}.{namespace}.svc"
+            task["health_check"] = f"{scheme}://{service_name}:{port}{path}"
+    else:
+        task["blocking"] = "completion"
+
+
+def _substitute_dns_in_args(tasks, job_id, namespace):
+    """Substitute DNS placeholders in container args."""
+    task_names = {task.get("name"): i for i, task in enumerate(tasks)}
+
+    for task in tasks:
+        containers = task.get("containers", [])
+        if not containers or "args" not in containers[0]:
+            continue
+
+        args = containers[0]["args"]
+        for i, arg in enumerate(args):
+            if not isinstance(arg, str):
+                continue
+
+            for task_name, target_task_id in task_names.items():
+                if f"http://{task_name}:" in arg or f"https://{task_name}:" in arg:
+                    service_name = f"s-{job_id}-{target_task_id}.{namespace}.svc"
+                    arg = arg.replace(f"://{task_name}:", f"://{service_name}:")
+            args[i] = arg
+
+
+def _build_init_jobs(base_dir, data_pvc_name, discovery_template, node_assignments):
+    """Build mkdir and optional discovery initialization jobs."""
+    jobs = []
+    previous_job_name = None
+    previous_blocking_type = None
+
+    # Add mkdir job
+    mkdir_job = build_mkdir_job(base_dir, data_pvc_name, "")
+    jobs.append(mkdir_job)
+    previous_job_name = mkdir_job["name"]
+    previous_blocking_type = "completion"
+
+    # Add discovery job if specified
+    if discovery_template:
+        discovery_job = build_discovery_job(
+            discovery_template,
+            base_dir,
+            data_pvc_name,
+            node_assignments.get(0, 0),
+        )
+        if discovery_job:
+            discovery_job["dependsOn"] = [
+                {"name": previous_job_name, "status": "Complete"}
+            ]
+            jobs.append(discovery_job)
+            previous_job_name = discovery_job["name"]
+            previous_blocking_type = "completion"
+
+    return jobs, previous_job_name, previous_blocking_type
+
+
+def _build_task_jobs(
+    tasks,
+    job_id,
+    namespace,
+    job_spec,
+    node_assignments,
+    data_pvc_name,
+    model_pvc_name,
+    base_dir,
+    previous_job_name,
+    previous_blocking_type,
+):
+    """Build replicated jobs for all tasks."""
+    replicated_jobs = []
+    services = []
+
+    for task_id, task in enumerate(tasks):
+        node_id = str(node_assignments.get(task_id, 0))
+
+        container_spec = build_container_spec(
+            task, task_id, job_id, namespace, data_pvc_name, model_pvc_name, base_dir
+        )
+
+        pod_spec = build_pod_spec(
+            task,
+            task_id,
+            job_id,
+            node_id,
+            container_spec,
+            data_pvc_name,
+            job_spec.get("configmap"),
+            base_dir,
+        )
+
+        blocking_type = task.get("blocking", "completion")
+        if blocking_type == "endpoint":
+            service = create_service(task, task_id, job_id, namespace)
+            if service:
+                services.append(service)
+
+        replicated_job = {
+            "name": f"task-{task_id}",
+            "replicas": 1,
+            "template": {
+                "spec": {
+                    "parallelism": 1,
+                    "completions": 1,
+                    "backoffLimit": 0,
+                    "template": pod_spec,
+                }
+            },
+        }
+
+        if previous_job_name:
+            dependency_status = (
+                "Ready" if previous_blocking_type == "endpoint" else "Complete"
+            )
+            replicated_job["dependsOn"] = [
+                {"name": previous_job_name, "status": dependency_status}
+            ]
+
+        replicated_jobs.append(replicated_job)
+        previous_job_name = replicated_job["name"]
+        previous_blocking_type = blocking_type
+
+    return replicated_jobs, services
+
+
 def generate_jobset(job_spec, node_assignments):
     """
     Generate JobSet YAML from job specification.
@@ -72,142 +212,35 @@ def generate_jobset(job_spec, node_assignments):
 
     data_pvc_name = storage.get("results", f"{namespace}-storage")
     model_pvc_name = storage.get("models", "coldpress-model-storage")
-
-    # Generate base directory
     base_dir = generate_base_dir(namespace, job_id)
 
-    replicated_jobs = []
-    services = []
-    previous_job_name = None
-    previous_blocking_type = None
-
-    # Add mkdir job as first task (init job)
-    mkdir_job = build_mkdir_job(base_dir, data_pvc_name, namespace)
-    replicated_jobs.append(mkdir_job)
-    previous_job_name = mkdir_job["name"]
-    previous_blocking_type = "completion"
-
-    # Add discovery job if template specified
-    if discovery_template:
-        discovery_job = build_discovery_job(
-            discovery_template,
-            base_dir,
-            data_pvc_name,
-            node_assignments.get(0, 0),  # Run on same node as first task
-        )
-        if discovery_job:
-            # Discovery depends on mkdir
-            discovery_job["dependsOn"] = [
-                {"name": previous_job_name, "status": "Complete"}
-            ]
-            replicated_jobs.append(discovery_job)
-            previous_job_name = discovery_job["name"]
-            previous_blocking_type = "completion"
-
-    # Preprocess tasks: infer blocking type from readinessProbe and prepare DNS substitution
-    task_names = {task.get("name"): i for i, task in enumerate(tasks)}
-
+    # Preprocess tasks
     for task_id, task in enumerate(tasks):
-        # Infer blocking type from readinessProbe if not explicitly set
-        if "blocking" not in task:
-            containers = task.get("containers", [])
-            if containers and "readinessProbe" in containers[0]:
-                task["blocking"] = "endpoint"
-                # Extract health_check URL from readinessProbe using full service DNS name
-                probe = containers[0]["readinessProbe"]
-                if "httpGet" in probe:
-                    http_get = probe["httpGet"]
-                    path = http_get.get("path", "/")
-                    port = http_get.get("port", 80)
-                    scheme = http_get.get("scheme", "HTTP").lower()
-                    service_name = f"s-{job_id}-{task_id}.{namespace}.svc"
-                    task["health_check"] = f"{scheme}://{service_name}:{port}{path}"
-            else:
-                task["blocking"] = "completion"
+        _infer_blocking_type_and_health_check(task, task_id, job_id, namespace)
+    _substitute_dns_in_args(tasks, job_id, namespace)
 
-        # Substitute DNS placeholders in args (e.g., http://task-name:port → http://s-job-id-task-id.namespace.svc:port)
-        containers = task.get("containers", [])
-        if containers and "args" in containers[0]:
-            args = containers[0]["args"]
-            for i, arg in enumerate(args):
-                if isinstance(arg, str):
-                    # Check if arg contains a URL with task name
-                    for task_name, target_task_id in task_names.items():
-                        if (
-                            f"http://{task_name}:" in arg
-                            or f"https://{task_name}:" in arg
-                        ):
-                            # Substitute with full service DNS name (includes namespace and .svc)
-                            service_name = (
-                                f"s-{job_id}-{target_task_id}.{namespace}.svc"
-                            )
-                            arg = arg.replace(f"://{task_name}:", f"://{service_name}:")
-                    args[i] = arg
+    # Build init jobs
+    init_jobs, previous_job_name, previous_blocking_type = _build_init_jobs(
+        base_dir, data_pvc_name, discovery_template, node_assignments
+    )
 
-    # Track which task runs on which node for service DNS
-    node_task_map = {}
-    for i, task in enumerate(tasks):
-        node_id = str(node_assignments.get(i, 0))
-        if node_id not in node_task_map:
-            node_task_map[node_id] = i
+    # Build task jobs
+    task_jobs, services = _build_task_jobs(
+        tasks,
+        job_id,
+        namespace,
+        job_spec,
+        node_assignments,
+        data_pvc_name,
+        model_pvc_name,
+        base_dir,
+        previous_job_name,
+        previous_blocking_type,
+    )
 
-    for task_id, task in enumerate(tasks):
-        task_name = task.get("name", f"task-{task_id}")
-        node_id = str(node_assignments.get(task_id, 0))
+    replicated_jobs = init_jobs + task_jobs
 
-        # Build container spec (pass base_dir for result paths)
-        container_spec = build_container_spec(
-            task, task_id, job_id, namespace, data_pvc_name, model_pvc_name, base_dir
-        )
-
-        # Build pod spec
-        configmap_info = job_spec.get("configmap")
-        pod_spec = build_pod_spec(
-            task,
-            task_id,
-            job_id,
-            node_id,
-            container_spec,
-            data_pvc_name,
-            configmap_info,
-            base_dir,
-        )
-
-        # Create service if needed (for endpoint blocking)
-        blocking_type = task.get("blocking", "completion")
-        if blocking_type == "endpoint":
-            service = create_service(task, task_id, job_id, namespace)
-            if service:
-                services.append(service)
-
-        # Build replicated job
-        replicated_job = {
-            "name": f"task-{task_id}",
-            "replicas": 1,
-            "template": {
-                "spec": {
-                    "parallelism": 1,
-                    "completions": 1,
-                    "backoffLimit": 0,
-                    "template": pod_spec,
-                }
-            },
-        }
-
-        # Add dependency on previous task
-        if previous_job_name:
-            dependency_status = (
-                "Ready" if previous_blocking_type == "endpoint" else "Complete"
-            )
-            replicated_job["dependsOn"] = [
-                {"name": previous_job_name, "status": dependency_status}
-            ]
-
-        replicated_jobs.append(replicated_job)
-        previous_job_name = replicated_job["name"]
-        previous_blocking_type = blocking_type
-
-    # Determine which jobs are drivers (completion blocking)
+    # Determine driver jobs
     driver_jobs = [
         f"task-{i}"
         for i, task in enumerate(tasks)
@@ -216,7 +249,6 @@ def generate_jobset(job_spec, node_assignments):
 
     # Build JobSet spec
     jobset_spec = {"suspend": True, "replicatedJobs": replicated_jobs}
-
     if driver_jobs:
         jobset_spec["successPolicy"] = {
             "operator": "All",
@@ -242,62 +274,68 @@ def generate_jobset(job_spec, node_assignments):
     return jobset, services, base_dir
 
 
-def build_container_spec(
-    task, task_id, job_id, namespace, data_pvc_name, model_pvc_name, base_dir
-):
-    """Build container specification from task."""
-    # Extract container details from containers array (use first container)
+def _extract_container_config(task):
+    """Extract container configuration from task."""
     containers = task.get("containers", [])
     if containers:
         container_def = containers[0]
-        image = container_def.get("image", "alpine:latest")
-        command = container_def.get("command")
-        args = container_def.get("args", [])
-        env = container_def.get("env", [])
-        working_dir = container_def.get("workingDir")
-        # Extract GPU count from resources
-        resources = container_def.get("resources", {})
-        gpu_str = resources.get("requests", {}).get("nvidia.com/gpu", "0")
-        gpus = int(gpu_str)
-    else:
-        # Fallback to old flat format for backwards compatibility
-        image = task.get("image", "alpine:latest")
-        command = task.get("command")
-        args = task.get("args", [])
-        env = task.get("env", [])
-        working_dir = task.get("workingDir")
-        gpus = task.get("gpus", 0)
-        resources = task.get("resources", {})
+        return {
+            "image": container_def.get("image", "alpine:latest"),
+            "command": container_def.get("command"),
+            "args": container_def.get("args", []),
+            "env": container_def.get("env", []),
+            "working_dir": container_def.get("workingDir"),
+            "resources": container_def.get("resources", {}),
+            "gpus": int(
+                container_def.get("resources", {})
+                .get("requests", {})
+                .get("nvidia.com/gpu", "0")
+            ),
+        }
 
-    # Build resources (merge with GPU count)
+    # Fallback to old flat format
+    return {
+        "image": task.get("image", "alpine:latest"),
+        "command": task.get("command"),
+        "args": task.get("args", []),
+        "env": task.get("env", []),
+        "working_dir": task.get("workingDir"),
+        "resources": task.get("resources", {}),
+        "gpus": task.get("gpus", 0),
+    }
+
+
+def _build_container_resources(resources, gpus):
+    """Build resource requests and limits."""
     if not resources.get("limits"):
         resources["limits"] = resources.get("requests", {}).copy()
     if not resources.get("requests"):
         resources["requests"] = {}
-    # Ensure GPU is set
+
     if gpus > 0:
         resources["limits"]["nvidia.com/gpu"] = str(gpus)
         resources["requests"]["nvidia.com/gpu"] = str(gpus)
 
-    # Build volume mounts
+    return {
+        "requests": resources.get("requests", {}),
+        "limits": resources.get("limits", {}),
+    }
+
+
+def _build_volume_mounts(task, task_id, base_dir):
+    """Build volume mounts for container."""
     volume_mounts = [{"name": "coldpress-data", "mountPath": "/mnt/coldpress-data"}]
 
-    # Add ephemeral mounts if specified
-    # Use base_dir for result path
     result_path = task.get("result_path", f"{base_dir}/{task_id}")
     ephemeral_mounts = task.get("ephemeral_mounts", [])
 
-    # Handle both string and list formats for ephemeral_mounts
     if isinstance(ephemeral_mounts, str):
         ephemeral_mounts = [ephemeral_mounts]
 
     for mount in ephemeral_mounts:
-        # Handle both dict format and string format
-        if isinstance(mount, dict):
-            target = mount.get("target", "/tmp/result")
-        else:
-            target = mount
-
+        target = (
+            mount.get("target", "/tmp/result") if isinstance(mount, dict) else mount
+        )
         volume_mounts.append(
             {
                 "name": "coldpress-data",
@@ -306,47 +344,145 @@ def build_container_spec(
             }
         )
 
-    container = {
-        "name": "main",
-        "image": image,
-        "volumeMounts": volume_mounts,
-        "resources": {
-            "requests": resources.get("requests", {}),
-            "limits": resources.get("limits", {}),
+    return volume_mounts
+
+
+def _build_readiness_probe(task):
+    """Build readiness probe for endpoint blocking."""
+    if task.get("blocking") != "endpoint" or not task.get("health_check"):
+        return None
+
+    health_url = task["health_check"]
+    parsed = urlparse(health_url)
+    return {
+        "httpGet": {
+            "path": parsed.path or "/",
+            "port": parsed.port or 8000,
+            "scheme": (parsed.scheme or "http").upper(),
         },
+        "initialDelaySeconds": 30,
+        "periodSeconds": 10,
+        "failureThreshold": 10,
     }
 
-    if working_dir:
-        container["workingDir"] = working_dir
-    if command:
+
+def build_container_spec(
+    task, task_id, job_id, namespace, data_pvc_name, model_pvc_name, base_dir
+):
+    """Build container specification from task."""
+    config = _extract_container_config(task)
+
+    container = {
+        "name": "main",
+        "image": config["image"],
+        "volumeMounts": _build_volume_mounts(task, task_id, base_dir),
+        "resources": _build_container_resources(config["resources"], config["gpus"]),
+    }
+
+    if config["working_dir"]:
+        container["workingDir"] = config["working_dir"]
+    if config["command"]:
         container["command"] = (
-            command if isinstance(command, list) else shlex.split(command)
+            config["command"]
+            if isinstance(config["command"], list)
+            else shlex.split(config["command"])
         )
-    if args:
-        container["args"] = args if isinstance(args, list) else shlex.split(args)
-    if env:
+    if config["args"]:
+        container["args"] = (
+            config["args"]
+            if isinstance(config["args"], list)
+            else shlex.split(config["args"])
+        )
+    if config["env"]:
         container["env"] = (
-            [{"name": k, "value": str(v)} for k, v in env.items()]
-            if isinstance(env, dict)
-            else env
+            [{"name": k, "value": str(v)} for k, v in config["env"].items()]
+            if isinstance(config["env"], dict)
+            else config["env"]
         )
 
-    # Add readiness probe for endpoint blocking
-    if task.get("blocking") == "endpoint" and task.get("health_check"):
-        health_url = task["health_check"]
-        parsed = urlparse(health_url)
-        container["readinessProbe"] = {
-            "httpGet": {
-                "path": parsed.path or "/",
-                "port": parsed.port or 8000,
-                "scheme": (parsed.scheme or "http").upper(),
-            },
-            "initialDelaySeconds": 30,
-            "periodSeconds": 10,
-            "failureThreshold": 10,
-        }
+    readiness_probe = _build_readiness_probe(task)
+    if readiness_probe:
+        container["readinessProbe"] = readiness_probe
 
     return container
+
+
+def _add_configmap_volume(volumes, container_spec, configmap_info):
+    """Add ConfigMap volume and mounts if specified."""
+    if not configmap_info:
+        return
+
+    volumes.append(
+        {"name": "configmap-files", "configMap": {"name": configmap_info["name"]}}
+    )
+    for file_name in configmap_info.get("files", []):
+        container_spec["volumeMounts"].append(
+            {
+                "name": "configmap-files",
+                "mountPath": f"/workspace/{file_name}",
+                "subPath": file_name,
+            }
+        )
+
+
+def _add_task_volumes(volumes, container_spec, task, base_dir):
+    """Add volumes from task.volumes array."""
+    for vol in task.get("volumes", []):
+        vol_name = vol.get("name")
+        vol_type = vol.get("type", "pvc")
+        mount_path = vol.get("mount")
+
+        if vol_type == "emptyDir":
+            volume_def = {"name": vol_name, "emptyDir": {}}
+            if vol.get("medium"):
+                volume_def["emptyDir"]["medium"] = vol["medium"]
+            if vol.get("sizeLimit"):
+                volume_def["emptyDir"]["sizeLimit"] = vol["sizeLimit"]
+            volumes.append(volume_def)
+
+        if mount_path:
+            if vol_name == "results":
+                container_spec["volumeMounts"].append(
+                    {
+                        "name": "coldpress-data",
+                        "mountPath": mount_path,
+                        "subPath": base_dir if base_dir else vol.get("subPath", ""),
+                    }
+                )
+            else:
+                container_spec["volumeMounts"].append(
+                    {"name": vol_name, "mountPath": mount_path}
+                )
+
+
+def _add_sys_mounts(volumes, container_spec, task):
+    """Add host path mounts if specified."""
+    for i, mount in enumerate(task.get("sys_mounts", [])):
+        volumes.append(
+            {
+                "name": f"sys-{i}",
+                "hostPath": {"path": mount["source"], "type": "Directory"},
+            }
+        )
+        container_spec["volumeMounts"].append(
+            {
+                "name": f"sys-{i}",
+                "mountPath": mount["target"],
+                "readOnly": mount.get("read_only", False),
+            }
+        )
+
+
+def _apply_pod_options(pod_spec, task, container_spec):
+    """Apply optional pod settings like tolerations, network mode, and security context."""
+    if task.get("tolerate_all"):
+        pod_spec["spec"]["tolerations"] = [{"operator": "Exists"}]
+
+    if task.get("network_mode") == "host":
+        pod_spec["spec"]["hostNetwork"] = True
+
+    if task.get("privileged"):
+        container_spec["securityContext"] = {"privileged": True}
 
 
 def build_pod_spec(
@@ -367,71 +503,9 @@ def build_pod_spec(
         }
     ]
 
-    # Add ConfigMap volume if files are specified
-    if configmap_info:
-        volumes.append(
-            {"name": "configmap-files", "configMap": {"name": configmap_info["name"]}}
-        )
-        # Mount each file from ConfigMap to working directory
-        for file_name in configmap_info.get("files", []):
-            container_spec["volumeMounts"].append(
-                {
-                    "name": "configmap-files",
-                    "mountPath": f"/workspace/{file_name}",
-                    "subPath": file_name,
-                }
-            )
-
-    # Add volumes from task.volumes array
-    for vol in task.get("volumes", []):
-        vol_name = vol.get("name")
-        vol_type = vol.get("type", "pvc")  # default to PVC
-        mount_path = vol.get("mount")
-
-        if vol_type == "emptyDir":
-            # EmptyDir volume (e.g., for /dev/shm)
-            volume_def = {"name": vol_name, "emptyDir": {}}
-            if vol.get("medium"):
-                volume_def["emptyDir"]["medium"] = vol["medium"]
-            if vol.get("sizeLimit"):
-                volume_def["emptyDir"]["sizeLimit"] = vol["sizeLimit"]
-            volumes.append(volume_def)
-        elif vol_name == "results":
-            # Results volume mounts to coldpress-data PVC (already added)
-            # Just add the volumeMount to container
-            pass
-
-        # Add volume mount to container if mount path specified
-        if mount_path:
-            if vol_name == "results":
-                # Use existing coldpress-data volume, mount to base_dir
-                container_spec["volumeMounts"].append(
-                    {
-                        "name": "coldpress-data",
-                        "mountPath": mount_path,
-                        "subPath": base_dir if base_dir else vol.get("subPath", ""),
-                    }
-                )
-            else:
-                container_spec["volumeMounts"].append(
-                    {"name": vol_name, "mountPath": mount_path}
-                )
-
-    # Add host path mounts if specified
-    for i, mount in enumerate(task.get("sys_mounts", [])):
-        volumes.append(
-            {
-                "name": f"sys-{i}",
-                "hostPath": {"path": mount["source"], "type": "Directory"},
-            }
-        )
-        container_spec["volumeMounts"].append(
-            {
-                "name": f"sys-{i}",
-                "mountPath": mount["target"],
-                "readOnly": mount.get("read_only", False),
-            }
-        )
+    _add_configmap_volume(volumes, container_spec, configmap_info)
+    _add_task_volumes(volumes, container_spec, task, base_dir)
+    _add_sys_mounts(volumes, container_spec, task)
 
     pod_spec = {
         "metadata": {
@@ -449,17 +523,7 @@ def build_pod_spec(
         },
     }
 
-    # Add tolerations if specified
-    if task.get("tolerate_all"):
-        pod_spec["spec"]["tolerations"] = [{"operator": "Exists"}]
-
-    # Add host network if specified
-    if task.get("network_mode") == "host":
-        pod_spec["spec"]["hostNetwork"] = True
-
-    # Add privileged security context if specified
-    if task.get("privileged"):
-        container_spec["securityContext"] = {"privileged": True}
+    _apply_pod_options(pod_spec, task, container_spec)
 
     return pod_spec
 

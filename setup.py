@@ -5,12 +5,11 @@ from setuptools import setup, find_packages
 
 setup(
     name="coldpress",
-    version="2.0.0",
+    version="0.2.0",
     description="AI/HPC workload orchestration for Kubernetes/OpenShift",
     packages=find_packages(),
     install_requires=[
         "click>=8.0.0",
-        "kubernetes>=27.0.0",
         "pyyaml>=6.0.0",
         "pydantic>=2.0.0",
     ],
