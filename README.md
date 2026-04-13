@@ -1,177 +1,144 @@
 <!-- Assisted by: Claude Sonnet 4.5 -->
 # Coldpress
 
-Kubernetes-native job orchestration for AI/HPC workloads with GPU allocation and multi-task dependencies.
-
-## Overview
-
-Coldpress simplifies running complex multi-task jobs on Kubernetes clusters with GPU resources. Generate JobSet manifests locally, inspect them, and run with standard `oc` commands.
+Coldpress is a local manifest generator for running AI/HPC workloads on Kubernetes clusters. It generates JobSet manifests and helper scripts on your local machine, which you can then inspect and apply to the cluster using standard `kubectl` or `oc` commands.
 
 **Two-piece architecture:**
 
-1. **Setup** (`coldpress-setup`) - One-time cluster setup (node labels, queues, namespaces)
-2. **Generate** (`coldpress`) - Local CLI generates JobSet YAML + bash scripts, then run with `oc apply`
+1. **Setup** (`coldpress-setup`) - Manifest generator for one-time cluster setup (node labels, queues, namespaces, RBAC)
+2. **Execute** (`coldpress`) - Manifest generator for job specifications, creates JobSet YAML + bash helper scripts
 
-## Quick Start
+**Key principle:** All manifests are generated locally and can be inspected before applying to the cluster. This enables GitOps workflows and provides full transparency.
 
-### 1. Setup Environment
+## How Does It Work?
+
+### Overall Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Prerequisites: Kueue and JobSet operators must be installed    │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ Phase 1: Admin Setup (One-time)                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. coldpress-setup generate cluster → manifests/cluster-*.yaml │
+│                                     → manifests/label-nodes.sh  │
+│                                                                 │
+│ 2. ./manifests/label-nodes-*.sh (labels nodes for scheduling)  │
+│                                                                 │
+│ 3. oc apply -f manifests/cluster-*.yaml                         │
+│                                                                 │
+│ 4. coldpress-setup generate project → manifests/project-*.yaml │
+│                                                                 │
+│ 5. oc apply -f manifests/project-*.yaml                         │
+│                                                                 │
+│ 6. coldpress-setup generate user    → manifests/user-*.yaml    │
+│                                                                 │
+│ 7. oc apply -f manifests/user-*.yaml                            │
+│                                                                 │
+│ Creates: Node labels, ClusterQueue, ResourceFlavors,           │
+│          Namespaces, PVCs, RBAC                                 │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ Phase 2: User Workflow (Repeatable)                             │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. coldpress generate --config job.yaml → output/job-name/     │
+│    - jobset.yaml (Kubernetes manifest)                          │
+│    - run.sh, monitor.sh, logs.sh, cleanup.sh (helper scripts)  │
+│                                                                 │
+│ 2. User reviews jobset.yaml                                     │
+│                                                                 │
+│ 3. ./run.sh applies JobSet to cluster                           │
+│                                                                 │
+│ 4. Kueue schedules job when resources available                │
+│                                                                 │
+│ 5. Jobs execute: mkdir → task-0 → task-1 → ...                 │
+│    - Init containers capture hardware discovery                │
+│    - Main containers run workload                               │
+│    - Results saved to PVC in task-specific directories         │
+│                                                                 │
+│ 6. ./logs.sh captures logs to PVC                               │
+│                                                                 │
+│ 7. ./explore.sh opens interactive shell to browse results      │
+│                                                                 │
+│ 8. ./cleanup.sh deletes JobSet (preserves results in PVC)      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### What Coldpress Does
+
+**For Administrators (`coldpress-setup`):**
+- Generates cluster-wide Kueue resources (ClusterQueue, ResourceFlavors)
+- Generates project namespaces with LocalQueues and PersistentVolumeClaims
+- Generates user RBAC (RoleBindings) for job submission
+- Generates node labeling scripts (coldpress requires node labels for scheduling)
+- Outputs timestamped manifests for GitOps and auditing
+- **Note:** Does NOT install Kueue or JobSet operators (must be pre-installed)
+
+**For Users (`coldpress`):**
+- Reads job specifications (containers, resources, dependencies)
+- Generates JobSet manifests with:
+  - Task dependencies (endpoint blocking, completion blocking)
+  - Node affinity rules (explicit or scheduler-based)
+  - Volume mounts
+  - Hardware discovery init containers
+- Creates helper scripts for job lifecycle management
+- Validates YAML schemas before generation (catches errors early)
+
+**What Coldpress Does NOT Do:**
+- Does not deploy anything to the cluster (that's `kubectl`/`oc` apply)
+- Does not require cluster access to generate manifests
+- Does not create user accounts (users must exist in cluster auth system)
+- Does not install or manage the Kueue or JobSet operators (must be pre-installed as prerequisites)
+
+## Getting Started
+
+### Setup Environment (First Time)
+
+Install the Coldpress CLI tools on your local machine:
 
 ```bash
 ./setup-env.sh
 source .venv/bin/activate
 ```
 
-The setup script uses `uv` (fast Python package installer) and will install it automatically if not present.
 
-**Why uv?**
-- 10-100x faster than pip for package installation
-- Better dependency resolution
-- Built-in virtual environment management
-- Backward compatible with pip workflows
-
-### 2. Configure Cluster (Admin)
-
-Generate cluster-wide configuration manifests:
+**For subsequent sessions:**
 ```bash
-coldpress-setup apply cluster ocp-test-nerc-mghpcc.yaml
-# Review the manifest
-cat manifests/cluster-*.yaml
-# Apply to cluster
-oc apply -f manifests/cluster-*.yaml
+source .venv/bin/activate
 ```
 
-Generate project configuration manifests:
-```bash
-coldpress-setup apply project researcher-a.yaml
-# Review the manifest (check RBAC permissions)
-cat manifests/project-*.yaml
-# Apply to cluster
-oc apply -f manifests/project-*.yaml
-```
+### For Administrators
 
-Grant user access (user must already exist in cluster auth system):
-```bash
-coldpress-setup apply user coldpress-user.yaml
-# Review the manifest
-cat manifests/user-*.yaml
-# Apply to cluster
-oc apply -f manifests/user-*.yaml
-```
+If you are setting up Coldpress for the first time on a cluster, follow the **[Admin Quickstart Guide](docs/quickstart_admin.md)** to:
 
-**Note:** 
-- `coldpress-setup` generates timestamped manifests to `manifests/` directory
-- Admin reviews manifests before applying (enables GitOps workflows)
-- Config files can be stored anywhere - the subcommand (`cluster`, `project`, `user`) specifies the type
-- User must already exist in the cluster's authentication system (OAuth, LDAP, etc.)
-- Project must be configured first (creates the Role that user RBAC references)
+1. Generate and apply cluster-wide configuration (ClusterQueue, ResourceFlavors)
+2. Generate and apply project configuration (namespaces, storage, queues)
+3. Generate and apply user RBAC (permissions for job submission)
 
-These manifests create:
-- Kueue ResourceFlavors and ClusterQueue (with nodeLabel selectors)
-- Namespace with LocalQueue and PVC (500Gi)
-- Namespace labeled with `kueue.openshift.io/managed=true`
-- RoleBindings granting user permissions to submit JobSets in specified namespaces
+This is a one-time setup process that configures the cluster infrastructure for all users.
 
-**Note:** After applying cluster config, manually label your cluster nodes:
-```bash
-oc label node <node-hostname-0> coldpress.node=0
-oc label node <node-hostname-1> coldpress.node=1
-```
+### For Users
 
-**TODO:** Replace manual node labelling with an automated approach
+Once the admin has completed the cluster setup, follow the **[User Quickstart Guide](docs/quickstart_user.md)** to:
 
-### 3. Generate Job
+1. Generate job manifests from your workload specification
+2. Review and apply the JobSet to the cluster
+3. Monitor job progress and capture logs
+4. Explore results in persistent storage
+5. Clean up cluster resources (preserves results)
 
-```bash
-coldpress generate --config examples/pytorch_ddp_training/config.yaml
-```
-
-Creates `output/ddp-training-job/` with:
-- `jobset.yaml` - JobSet manifest
-- `run.sh` - Apply and wait for completion
-- `cleanup.sh` - Delete resources
-- `monitor.sh` - Watch job status
-- `logs.sh` - Capture and save logs to PVC
-- `explore.sh` - Interactive shell to browse results
-
-**Node Scheduling:**
-
-Three ways to control node assignment (priority order):
-
-1. **CLI flag** (highest priority):
-   ```bash
-   coldpress generate --config job.yaml --node 0 --node 1
-   ```
-
-2. **Config file**:
-   ```yaml
-   # config.yaml
-   nodes:
-     - 0  # Task 0 → node 0
-     - 1  # Task 1 → node 1
-   ```
-
-3. **Kubernetes scheduler** (default):
-   - No `nodes` in config and no `--node` flag
-   - Scheduler selects any node with `coldpress.node` label
-   - Best for dynamic cluster utilization
-
-See `examples/pytorch_ddp_training_node1/` for explicit node assignment example.
-
-### 4. Run Job
-
-```bash
-cd output/ddp-training-job/
-./run.sh
-```
-
-Monitor progress:
-```bash
-./monitor.sh
-```
-
-View and save logs:
-```bash
-./logs.sh
-```
-
-Explore results:
-```bash
-./explore.sh
-```
-
-Cleanup (preserves results in PVC):
-```bash
-./cleanup.sh
-```
-
-## Features
-
-- **Flexible Node Scheduling** - Kubernetes scheduler selects any coldpress-labeled node, or pin to specific nodes with `--node`
-- **Per-Task Hardware Discovery** - Init containers capture actual node hardware for each task, placed in task-specific result directories
-- **Task Dependencies** - Endpoint and completion blocking for multi-task workflows
-- **Result Collection** - Organized storage in user PVCs with task-specific directories
-- **Log Capture** - Save pod logs to persistent storage
-- **File Injection** - Mount local files via ConfigMaps
-- **YAML Validation** - Pydantic-based schema validation catches errors before cluster operations
-- **Transparent Workflow** - All manifests and scripts generated locally for inspection
-- **No Cluster Access Required** - Generate manifests without kubectl/oc (only needed for applying)
-
-## Complete Tutorial
-
-See [steps.md](steps.md) for a detailed step-by-step walkthrough of running the PyTorch DDP training example, including:
-- Cluster and project setup
-- User RBAC configuration
-- Job generation and execution
-- Results exploration and log capture
-- Resource cleanup
+This workflow is repeatable for each job you want to run.
 
 ## Documentation
 
-- [steps.md](steps.md) - Complete PyTorch DDP training walkthrough
-- [docs/README.md](docs/README.md) - Architecture and detailed documentation
-- [docs/VALIDATION.md](docs/VALIDATION.md) - YAML validation system documentation
-- [examples/README.md](examples/README.md) - Example workloads and templates
-- [TODO.md](TODO.md) - Known limitations and planned features
+## Quickstart Guides
+
+- **[Admin Quickstart](docs/quickstart_admin.md)** - Cluster setup for administrators (one-time)
+- **[User Quickstart](docs/quickstart_user.md)** - Running workloads for users (repeatable)
+
 
 ## Repository Structure
 
@@ -201,12 +168,11 @@ coldpress/
 
 **Local development:**
 - Python 3.9+ (tested on Python 3.14)
-- `uv` (fast Python package installer - auto-installed by setup-env.sh)
+- `uv` (auto-installed by setup-env.sh)
 
 **For applying manifests to cluster:**
 - **`kubectl` or `oc` CLI** (tested with oc 4.17.0)
   - Required only for applying generated manifests
-  - **NOT required** for generating manifests with `coldpress` or `coldpress-setup`
   - Must be installed separately
 
 ## Environment Variables

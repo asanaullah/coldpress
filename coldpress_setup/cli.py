@@ -8,7 +8,11 @@ import shutil
 from datetime import datetime, timezone
 
 from .generator import manifests_to_yaml
-from coldpress_common import validate_project_config, validate_user_config
+from coldpress_common import (
+    validate_project_config,
+    validate_user_config,
+    validate_cluster_config,
+)
 from pydantic import ValidationError
 
 # Default directories (can be overridden with environment variables)
@@ -64,7 +68,7 @@ def cli():
 
 
 @cli.group()
-def apply():
+def generate():
     """
     Generate manifests for cluster, project, or user configuration.
 
@@ -72,14 +76,14 @@ def apply():
     The admin is responsible for reviewing and applying them.
 
     Use subcommands to specify the type of configuration:
-        coldpress-setup apply cluster <config.yaml>
-        coldpress-setup apply project <config.yaml>
-        coldpress-setup apply user <config.yaml>
+        coldpress-setup generate cluster <config.yaml>
+        coldpress-setup generate project <config.yaml>
+        coldpress-setup generate user <config.yaml>
     """
     pass
 
 
-@apply.command()
+@generate.command()
 @click.argument("config_file", type=click.Path())
 @click.option(
     "--output-dir",
@@ -97,8 +101,8 @@ def cluster(config_file, output_dir):
     The manifests are written to the output directory. The admin is responsible for applying them.
 
     Examples:
-        coldpress-setup apply cluster ocp-test-nerc-mghpcc.yaml
-        coldpress-setup apply cluster ocp-test-nerc-mghpcc.yaml --output-dir /path/to/manifests
+        coldpress-setup generate cluster ocp-test-nerc-mghpcc.yaml
+        coldpress-setup generate cluster ocp-test-nerc-mghpcc.yaml --output-dir /path/to/manifests
     """
     # Resolve config file path
     config_file = _resolve_config_path(config_file, "cluster")
@@ -106,10 +110,10 @@ def cluster(config_file, output_dir):
         click.echo(f"Error: Config file not found: {config_file}", err=True)
         return 1
 
-    return apply_cluster_config(config_file, output_dir)
+    return generate_cluster_config(config_file, output_dir)
 
 
-@apply.command()
+@generate.command()
 @click.argument("config_file", type=click.Path())
 @click.option(
     "--output-dir",
@@ -127,8 +131,8 @@ def project(config_file, output_dir):
     The manifests are written to the output directory. The admin is responsible for applying them.
 
     Examples:
-        coldpress-setup apply project researcher-a.yaml
-        coldpress-setup apply project researcher-a.yaml --output-dir /path/to/manifests
+        coldpress-setup generate project researcher-a.yaml
+        coldpress-setup generate project researcher-a.yaml --output-dir /path/to/manifests
     """
     # Resolve config file path
     config_file = _resolve_config_path(config_file, "project")
@@ -148,10 +152,10 @@ def project(config_file, output_dir):
         click.echo(f"Error: Project config validation failed:\n{e}", err=True)
         return 1
 
-    return apply_project_config(config, config_file, output_dir)
+    return generate_project_config(config, config_file, output_dir)
 
 
-@apply.command()
+@generate.command()
 @click.argument("config_file", type=click.Path())
 @click.option(
     "--output-dir",
@@ -169,8 +173,8 @@ def user(config_file, output_dir):
     The manifests are written to the output directory. The admin is responsible for applying them.
 
     Examples:
-        coldpress-setup apply user coldpress-user.yaml
-        coldpress-setup apply user coldpress-user.yaml --output-dir /path/to/manifests
+        coldpress-setup generate user coldpress-user.yaml
+        coldpress-setup generate user coldpress-user.yaml --output-dir /path/to/manifests
     """
     # Resolve config file path
     config_file = _resolve_config_path(config_file, "user")
@@ -190,13 +194,33 @@ def user(config_file, output_dir):
         click.echo(f"Error: User config validation failed:\n{e}", err=True)
         return 1
 
-    return apply_user_config(config, config_file, output_dir)
+    return generate_user_config(config, config_file, output_dir)
 
 
-def apply_cluster_config(config_file, output_dir):
+def generate_cluster_config(config_file, output_dir):
     """Generate cluster-wide configuration manifests."""
     click.echo("Generating cluster configuration manifests...")
     click.echo(f"Config file: {config_file}")
+
+    # Load and parse cluster config
+    with open(config_file, "r") as f:
+        # Load all YAML documents
+        all_docs = list(yaml.safe_load_all(f))
+
+    # First document should be the config with nodes
+    config_data = all_docs[0] if all_docs else {}
+
+    # Validate cluster config (extract nodes section)
+    nodes = []
+    try:
+        validated_config = validate_cluster_config(config_data)
+        nodes = [
+            {"hostname": node.hostname, "gpus": node.gpus, "roce_nics": node.roce_nics}
+            for node in validated_config.nodes
+        ]
+    except ValidationError as e:
+        click.echo(f"Warning: Could not validate cluster config: {e}", err=True)
+        click.echo("Continuing without node labeling commands...", err=True)
 
     # Use default output directory if not specified
     output_dir = output_dir or MANIFESTS_DIR
@@ -208,21 +232,55 @@ def apply_cluster_config(config_file, output_dir):
     manifest_filename = _generate_manifest_filename("cluster", config_file)
     output_path = os.path.join(output_dir, manifest_filename)
 
-    # Copy cluster config to output directory
-    shutil.copy(config_file, output_path)
+    # Copy cluster config to output directory (all documents except the first config one)
+    with open(output_path, "w") as f:
+        # Write only the Kubernetes manifests (skip the config section)
+        yaml.dump_all(all_docs[1:], f, default_flow_style=False, sort_keys=False)
+
+    # Generate node labeling script if nodes were found
+    label_script_path = None
+    if nodes:
+        label_script_path = os.path.join(
+            output_dir, f"label-nodes-{os.path.splitext(os.path.basename(config_file))[0]}.sh"
+        )
+        with open(label_script_path, "w") as f:
+            f.write("#!/bin/bash\n")
+            f.write(f"# Generated by coldpress-setup on {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("# Label cluster nodes with coldpress.node IDs\n\n")
+            f.write("set -e\n\n")
+            f.write("echo 'Labeling cluster nodes...'\n\n")
+            for node_id, node in enumerate(nodes):
+                f.write(f"# Node {node_id}: {node['hostname']}\n")
+                f.write(f"oc label node {node['hostname']} coldpress.node={node_id} --overwrite\n")
+            f.write("\necho ''\n")
+            f.write("echo 'Verifying labels...'\n")
+            f.write("oc get nodes --show-labels | grep coldpress.node\n")
+            f.write("\necho ''\n")
+            f.write("echo 'Node labeling complete!'\n")
+        os.chmod(label_script_path, 0o755)
 
     click.echo(f"\nCluster manifest written to: {output_path}")
+    if label_script_path:
+        click.echo(f"Node labeling script written to: {label_script_path}")
     click.echo("\nResources in manifest:")
     click.echo("  - Kueue operator")
     click.echo("  - JobSet operator")
     click.echo("  - ResourceFlavors")
     click.echo("  - ClusterQueue")
+    if nodes:
+        click.echo(f"\nNodes to be labeled: {len(nodes)}")
+        for node_id, node in enumerate(nodes):
+            click.echo(f"  - {node['hostname']} → coldpress.node={node_id}")
     click.echo("\nNext steps:")
-    click.echo(f"  1. Review: cat {output_path}")
-    click.echo(f"  2. Apply: oc apply -f {output_path}")
-    click.echo("  3. Verify: oc get clusterqueues")
+    click.echo(f"  1. Review manifests: cat {output_path}")
+    if label_script_path:
+        click.echo(f"  2. Label nodes: {label_script_path}")
+        click.echo(f"  3. Apply manifests: oc apply -f {output_path}")
+    else:
+        click.echo(f"  2. Apply: oc apply -f {output_path}")
+    click.echo("  4. Verify: oc get clusterqueues")
     click.echo(
-        "  4. Generate project manifests: coldpress-setup apply project <project-config.yaml>"
+        "  5. Generate project manifests: coldpress-setup generate project <project-config.yaml>"
     )
 
     return 0
@@ -245,7 +303,7 @@ def _generate_and_display_manifests(config, manifest_generator):
     return manifests
 
 
-def apply_project_config(config, config_file, output_dir):
+def generate_project_config(config, config_file, output_dir):
     """Generate project configuration manifests."""
     from .generator import generate_project_manifests
 
@@ -281,7 +339,7 @@ def apply_project_config(config, config_file, output_dir):
     click.echo(f"  2. Apply: oc apply -f {output_path}")
     click.echo(f"  3. Verify: oc get namespace {namespace}")
     click.echo(
-        "  4. Generate user manifests: coldpress-setup apply user <user-config.yaml>"
+        "  4. Generate user manifests: coldpress-setup generate user <user-config.yaml>"
     )
 
     return 0
@@ -300,7 +358,7 @@ def _validate_user_config(config):
     return username, namespaces
 
 
-def apply_user_config(config, config_file, output_dir):
+def generate_user_config(config, config_file, output_dir):
     """Generate user configuration manifests."""
     from .generator import generate_user_rbac
 

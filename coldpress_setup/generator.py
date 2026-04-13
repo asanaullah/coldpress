@@ -5,11 +5,13 @@ import yaml
 
 
 def generate_kueue_resource_flavors(nodes):
-    """Generate Kueue ResourceFlavor manifests for each node."""
-    flavors = []
-    for node in nodes:
-        node_id = node["id"]
+    """Generate Kueue ResourceFlavor manifests for each node.
 
+    Args:
+        nodes: List of node configs. Node ID is assigned based on position in list.
+    """
+    flavors = []
+    for node_id, node in enumerate(nodes):
         flavor = {
             "apiVersion": "kueue.x-k8s.io/v1beta1",
             "kind": "ResourceFlavor",
@@ -22,7 +24,12 @@ def generate_kueue_resource_flavors(nodes):
 
 
 def generate_cluster_queue(name, nodes):
-    """Generate Kueue ClusterQueue manifest."""
+    """Generate Kueue ClusterQueue manifest.
+
+    Args:
+        name: ClusterQueue name
+        nodes: List of node configs. Node ID is assigned based on position in list.
+    """
     # Build list of all covered resources across all nodes
     covered_resources = ["cpu", "memory", "nvidia.com/gpu"]
 
@@ -34,8 +41,7 @@ def generate_cluster_queue(name, nodes):
 
     # Build flavors list with resources for each node
     flavors = []
-    for node in nodes:
-        node_id = node["id"]
+    for node_id, node in enumerate(nodes):
         gpus = node.get("gpus", 0)
         roce_nics = node.get("roce_nics", 0)
 

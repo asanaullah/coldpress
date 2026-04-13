@@ -7,11 +7,13 @@ from .model import (
     validate_task_specs,
     validate_job_spec,
     validate_user_config,
+    validate_cluster_config,
     WorkloadConfig,
     ProjectConfig,
     TaskSpec,
     JobSpec,
     UserConfig,
+    ClusterConfig,
 )
 
 __all__ = [
@@ -20,9 +22,11 @@ __all__ = [
     "validate_task_specs",
     "validate_job_spec",
     "validate_user_config",
+    "validate_cluster_config",
     "WorkloadConfig",
     "ProjectConfig",
     "TaskSpec",
     "JobSpec",
     "UserConfig",
+    "ClusterConfig",
 ]

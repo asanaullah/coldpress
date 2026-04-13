@@ -152,7 +152,7 @@ class TaskSpec(BaseModel):
     gpus: Optional[int] = 0
 
     # Task behavior
-    blocking: Optional[Literal["completion", "endpoint"]] = "completion"
+    blocking: Optional[Literal["completion", "endpoint"]] = None
     health_check: Optional[str] = None
     result_path: Optional[str] = None
     roce_nics: Optional[int] = 0
@@ -194,6 +194,29 @@ class TaskSpec(BaseModel):
 
 
 # === Config Models ===
+
+
+class NodeConfig(BaseModel):
+    """Node configuration for cluster setup."""
+
+    hostname: str
+    gpus: Optional[int] = 0
+    roce_nics: Optional[int] = 0
+
+
+class ClusterConfig(BaseModel):
+    """Cluster configuration from cluster/*.yaml."""
+
+    nodes: list[NodeConfig]
+    cluster_queue: Optional[str] = "cluster-queue-default"
+
+    @field_validator("nodes")
+    @classmethod
+    def ensure_nodes_not_empty(cls, v):
+        """Ensure nodes list is not empty."""
+        if not v:
+            raise ValueError("Cluster config must include at least one node")
+        return v
 
 
 class DiscoveryConfig(BaseModel):
@@ -383,3 +406,19 @@ def validate_user_config(user_data: dict) -> UserConfig:
         ValidationError: If validation fails
     """
     return UserConfig.model_validate(user_data)
+
+
+def validate_cluster_config(cluster_data: dict) -> ClusterConfig:
+    """
+    Validate cluster configuration.
+
+    Args:
+        cluster_data: Raw YAML data from cluster file
+
+    Returns:
+        Validated ClusterConfig
+
+    Raises:
+        ValidationError: If validation fails
+    """
+    return ClusterConfig.model_validate(cluster_data)
