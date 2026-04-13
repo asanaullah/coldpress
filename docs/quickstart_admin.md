@@ -7,7 +7,7 @@ This guide covers cluster-wide configuration tasks that require admin privileges
 - Admin access to Kubernetes/OpenShift cluster (tested on OpenShift 4.21.5, Kubernetes v1.34.4)
 - Kueue operator installed (tested with v0.11.6, API v1beta1)
 - JobSet operator installed (tested with v1.0.0, API v1alpha2)
-- **`kubectl` or `oc` CLI installed and configured** (tested with oc 4.17.0, required for applying manifests)
+- `kubectl` or `oc` CLI installed and configured (tested with oc 4.17.0)
 - Coldpress CLI tools installed (see main [README.md](../README.md))
 
 ---

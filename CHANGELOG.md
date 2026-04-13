@@ -26,23 +26,21 @@ All notable changes to Coldpress will be documented in this file.
   - Removed `COLDPRESS_OC_FLAGS` environment variable (CLI no longer interacts with cluster)
   - Added `COLDPRESS_MANIFESTS_DIR` environment variable (default: `manifests/`)
 
-- **`coldpress` no longer requires kubectl/oc for manifest generation**
+- **`coldpress` manifest generation improvements**
   - Removed automatic cluster-based node allocation
   - Default behavior: Kubernetes scheduler selects any node with `coldpress.node` label
   - Node assignment priority: CLI `--node` flag > `nodes` in config.yaml > Kubernetes scheduler
   - Can specify nodes in config.yaml: `nodes: [0, 1]` or via CLI: `--node 0 --node 1`
   - Generated manifests use `nodeAffinity` (scheduler picks node) or `nodeSelector` (pinned to specific node)
-  - Manifest generation now works completely offline without cluster access
 
 ### Removed
 - **`coldpress-setup verify` command** - Admins can verify resources using standard kubectl/oc commands
   - Use `oc get namespaces`, `oc get pvc -n <namespace>`, etc. instead
-  - No longer requires kubectl/oc to be installed for manifest generation
 
 - **`coldpress/allocator.py` module** - Removed automatic node allocation
   - Previous behavior queried cluster to find least-loaded node
-  - New behavior: let Kubernetes scheduler handle allocation (simpler, no cluster access needed)
-  - Users can still pin tasks to specific nodes with `--node` flag
+  - New behavior: Kubernetes scheduler handles allocation
+  - Users can pin tasks to specific nodes with `--node` flag
 
 ## [0.2.0] - 2026-04-13
 

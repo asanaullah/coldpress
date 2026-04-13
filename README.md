@@ -1,14 +1,12 @@
 <!-- Assisted by: Claude Sonnet 4.5 -->
 # Coldpress
 
-Coldpress is a local manifest generator for running AI/HPC workloads on Kubernetes clusters. It generates JobSet manifests and helper scripts on your local machine, which you can then inspect and apply to the cluster using standard `kubectl` or `oc` commands.
+Coldpress is a prescriptive manifest generator that reduces the effort and expertise needed to deploy complex AI/HPC workloads on Kubernetes clusters. It generates JobSet manifests and helper scripts from simple job specifications.
 
 **Two-piece architecture:**
 
-1. **Admin** (`coldpress-setup`) - Manifest generator for one-time cluster setup (node labels, queues, namespaces, RBAC)
-2. **User** (`coldpress`) - Manifest generator for job specifications, creates JobSet YAML + bash helper scripts
-
-**Key principle:** All manifests are generated locally and can be inspected before applying to the cluster. This enables GitOps workflows and provides full transparency.
+1. **Admin** (`coldpress-setup`) - Generates cluster setup manifests (node labels, queues, namespaces, RBAC)
+2. **User** (`coldpress`) - Generates job manifests from job specifications, creates JobSet YAML + helper scripts
 
 ## How Does It Work?
 
@@ -70,32 +68,29 @@ Coldpress is a local manifest generator for running AI/HPC workloads on Kubernet
 ### What Coldpress Does
 
 **For Administrators (`coldpress-setup`):**
-- Manages cluster-wide Kueue configuration (ClusterQueue, ResourceFlavors, LocalQueues)
+- Generates cluster-wide Kueue configuration (ClusterQueue, ResourceFlavors, LocalQueues)
 - Generates project namespaces with PersistentVolumeClaims
 - Generates user RBAC (RoleBindings) for job submission
-- Generates node labeling scripts (coldpress requires node labels for scheduling)
-- Outputs timestamped manifests for GitOps and auditing
-- **Note:** Kueue and JobSet operators must be pre-installed (coldpress configures them, does not install them)
+- Generates node labeling scripts
+- Outputs timestamped manifests for GitOps workflows
 
 **For Users (`coldpress`):**
-- Generates JobSet manifests from job specifications
+- Generates JobSet manifests from simple job specifications
 - Configures task dependencies (endpoint blocking, completion blocking)
-- Configures node affinity rules (explicit or scheduler-based)
+- Configures node affinity rules
 - Configures volume mounts and hardware discovery init containers
 - Creates helper scripts for job lifecycle management
-- Validates YAML schemas before generation (catches errors early)
+- Validates YAML schemas before generation
 
-**What Coldpress Does Not Do:**
-- Does not deploy anything to the cluster (that's `kubectl`/`oc` apply)
-- Does not require cluster access to generate manifests
-- Does not create user accounts (users must exist in cluster auth system)
-- Does not install or manage the Kueue or JobSet operators (must be pre-installed as prerequisites)
+**Prerequisites:**
+- Kueue and JobSet operators must be installed on the cluster
+- Users must exist in cluster authentication system
 
 ## Getting Started
 
 ### Setup Environment (First Time)
 
-Install the Coldpress CLI tools on your local machine:
+Install the Coldpress CLI tools:
 
 ```bash
 ./setup-env.sh
@@ -166,10 +161,8 @@ coldpress/
 **Local development:**
 - Python 3.9+ (tested on Python 3.14)
 
-**For applying manifests to cluster:**
-- **`kubectl` or `oc` CLI** (tested with oc 4.17.0)
-  - Required only for applying generated manifests
-  - Must be installed separately
+**Cluster tools:**
+- `kubectl` or `oc` CLI (tested with oc 4.17.0)
 
 ## Environment Variables
 

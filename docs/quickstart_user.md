@@ -6,7 +6,7 @@ This guide shows the typical workflow for a regular user submitting and managing
 **Prerequisites:**
 - **Admin must have completed the [Admin Quickstart Guide](quickstart_admin.md) first** (cluster, project, and user configuration)
 - Coldpress CLI tools installed (see main [README.md](../README.md))
-- **`kubectl` or `oc` CLI installed and configured** (required)
+- `kubectl` or `oc` CLI installed and configured
 - User has access to the target namespace
 
 ---
