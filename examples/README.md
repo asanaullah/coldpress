@@ -30,7 +30,7 @@ Each workload directory contains:
 
 **config.yaml:**
 ```yaml
-project: researcher-a      # Project config (projects/researcher-a.yaml)
+project: researcher-a      # References project config researcher-a.yaml (stored in projects/ directory)
 
 # Discovery - runs as init container per task to capture actual node hardware
 discovery: user_snapshot   # Simple format (all tasks, backward compatible)

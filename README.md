@@ -85,7 +85,7 @@ Coldpress is a local manifest generator for running AI/HPC workloads on Kubernet
 - Creates helper scripts for job lifecycle management
 - Validates YAML schemas before generation (catches errors early)
 
-**What Coldpress Does NOT Do:**
+**What Coldpress Does Not Do:**
 - Does not deploy anything to the cluster (that's `kubectl`/`oc` apply)
 - Does not require cluster access to generate manifests
 - Does not create user accounts (users must exist in cluster auth system)

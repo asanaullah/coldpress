@@ -80,7 +80,7 @@ try:
 except ValidationError as e:
     print(f"Validation error: {e}")
 
-# Validate user config
+# Validate user config (file is in users/ directory)
 try:
     with open("users/username.yaml") as f:
         user_data = yaml.safe_load(f)
@@ -124,7 +124,7 @@ except ValidationError as e:
 - ✓ ports (optional)
 - ✓ readinessProbe (optional)
 
-### Project Config (`projects/*.yaml`)
+### Project Config (stored in projects/ directory)
 **Required:**
 - ✓ namespace (string)
 
@@ -133,7 +133,7 @@ except ValidationError as e:
 - ✓ storage_class (string)
 - ✓ storage (object with results, models, size)
 
-### User Config (`users/*.yaml`)
+### User Config (stored in users/ directory)
 **Required:**
 - ✓ username (string)
 - ✓ namespaces (list of strings, at least one required)

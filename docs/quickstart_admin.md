@@ -153,7 +153,7 @@ coldpress-setup generate user coldpress-user.yaml
 
 This generates a timestamped manifest file (e.g., `manifests/user-coldpress-user-20260413-153047.yaml`).
 
-**User config example** (`users/coldpress-user.yaml`):
+**User config example** (coldpress-user.yaml in the users/ directory):
 ```yaml
 username: coldpress-user
 namespaces:
@@ -175,7 +175,7 @@ oc apply -f manifests/user-coldpress-user-*.yaml
 - Binds existing user to existing Role: `coldpress-user-role` (created by project setup)
 - Grants permissions: create/manage JobSets, view Jobs/Pods/Services
 
-**Important:** This does NOT create a user account. Users must already exist in your cluster's authentication system.
+**Important:** This does not create a user account. Users must already exist in your cluster's authentication system.
 
 **Verification:**
 ```bash
@@ -203,11 +203,11 @@ You have now completed the admin setup for Coldpress:
 Users can now follow the [User Quickstart Guide](quickstart_user.md) to submit and manage AI/HPC workloads.
 
 **For additional users:**
-1. Create a user config in `users/username.yaml`
-2. Apply with `coldpress-setup generate user username.yaml`
+1. Create a user config file in the `users/` directory (e.g., username.yaml)
+2. Generate manifests with `coldpress-setup generate user username.yaml`
 3. Apply the manifest with `oc apply -f manifests/user-*.yaml`
 
 **For additional projects:**
-1. Create a project config in `projects/project-name.yaml`
-2. Apply with `coldpress-setup generate project project-name.yaml`
+1. Create a project config file in the `projects/` directory (e.g., project-name.yaml)
+2. Generate manifests with `coldpress-setup generate project project-name.yaml`
 3. Apply the manifest with `oc apply -f manifests/project-*.yaml`
