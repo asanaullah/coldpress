@@ -22,9 +22,11 @@ All notable changes to Coldpress will be documented in this file.
   - Users without admin privileges get clear error messages
 
 ### Added
-- **Pydantic validation models** (`coldpress/model.py`) - Config files are now validated at load time
-  - Validates config.yaml, job-spec.yaml, and project configs
+- **Shared validation module** (`coldpress_common/model.py`) - Config files are now validated at load time by both tools
+  - Validates config.yaml, job-spec.yaml, project configs, and user configs
   - Clear error messages when YAML structure is invalid
+  - Both `coldpress` and `coldpress-setup` validate before operations
+  - New `UserConfig` model for validating users/*.yaml files
 - **`pyproject.toml`** - Modern Python packaging configuration
 - **`docs/VALIDATION.md`** - Documentation for config validation
 - **`test_validation.py`** - Test script for validating Pydantic models

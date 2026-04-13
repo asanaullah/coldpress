@@ -1,24 +1,30 @@
 # Coldpress YAML Validation
 
-Coldpress now includes comprehensive YAML validation using Pydantic models. This ensures that configuration errors are caught early at file load time, rather than during job execution.
+Coldpress includes comprehensive YAML validation using Pydantic models. This ensures that configuration errors are caught early at file load time, rather than during job execution.
 
 ## Overview
 
-The validation system is implemented in `coldpress/model.py` and provides type-safe, schema-validated models for all Coldpress configuration files:
+The validation system is implemented in the shared `coldpress_common` module and provides type-safe, schema-validated models for all Coldpress configuration files used by both `coldpress` and `coldpress-setup` tools:
 
-- **config.yaml** - Workload configuration
-- **job-spec.yaml** - Task specifications  
-- **projects/*.yaml** - Project configuration
+- **config.yaml** - Workload configuration (`coldpress` tool)
+- **job-spec.yaml** - Task specifications (`coldpress` tool)
+- **projects/*.yaml** - Project configuration (both tools)
+- **users/*.yaml** - User configuration (`coldpress-setup` tool)
 
 ## How It Works
 
-When you run `coldpress generate`, all YAML files are validated automatically:
+Both `coldpress` and `coldpress-setup` tools validate YAML files automatically:
 
+### `coldpress generate`
 1. **Config validation** - Checks project, discovery, output, and files fields
 2. **Task spec validation** - Validates container specs, resources, volumes, and dependencies
 3. **Project config validation** - Ensures namespace and storage are properly configured
 
-If validation fails, you'll get clear error messages indicating exactly what's wrong.
+### `coldpress-setup apply`
+1. **Project config validation** - Validates namespace, storage, cluster_queue
+2. **User config validation** - Validates username and namespaces list
+
+If validation fails, you'll get clear error messages indicating exactly what's wrong and the operation will be aborted before applying to the cluster.
 
 ## Example Error Messages
 
@@ -53,11 +59,16 @@ This will test both valid and invalid configurations to ensure proper error dete
 
 ## Using Validation in Code
 
-You can import and use the validation functions directly:
+You can import and use the validation functions directly from the shared module:
 
 ```python
 import yaml
-from coldpress.model import validate_config, validate_task_specs, validate_project_config
+from coldpress_common import (
+    validate_config,
+    validate_task_specs,
+    validate_project_config,
+    validate_user_config,
+)
 from pydantic import ValidationError
 
 # Validate config.yaml
@@ -66,6 +77,15 @@ try:
         config_data = yaml.safe_load(f)
         config = validate_config(config_data)
         print(f"Valid config: {config.project}")
+except ValidationError as e:
+    print(f"Validation error: {e}")
+
+# Validate user config
+try:
+    with open("users/username.yaml") as f:
+        user_data = yaml.safe_load(f)
+        user = validate_user_config(user_data)
+        print(f"Valid user: {user.username}")
 except ValidationError as e:
     print(f"Validation error: {e}")
 ```
@@ -112,6 +132,14 @@ except ValidationError as e:
 - ✓ storage_class (string)
 - ✓ storage (object with results, models, size)
 
+### User Config (`users/*.yaml`)
+**Required:**
+- ✓ username (string)
+- ✓ namespaces (list of strings, at least one required)
+
+**Validation Rules:**
+- namespaces list cannot be empty
+
 ## Advanced Validation Rules
 
 1. **Endpoint Blocking**: If `blocking: "endpoint"`, task must have either:
@@ -132,28 +160,48 @@ except ValidationError as e:
 - **Schema Documentation**: Pydantic models serve as living documentation
 - **IDE Support**: Better autocomplete and type hints when working with configs
 
+## Architecture
+
+### Shared Validation Module
+
+The validation logic is centralized in `coldpress_common/model.py`, which is imported by both:
+- `coldpress/cli.py` - Workload generation tool
+- `coldpress_setup/cli.py` - Cluster setup tool
+
+This ensures:
+- **Consistency**: Same validation rules across both tools
+- **Maintainability**: Single source of truth for schemas
+- **Early detection**: Errors caught before cluster operations
+
+### Why Shared Module?
+
+Previously, `model.py` was in `coldpress/` and only the `coldpress` tool validated configs. The `coldpress-setup` tool would accept invalid YAMLs and fail during cluster application. Now both tools validate upfront using the same shared models.
+
 ## Migration from Legacy
 
-This replaces the old `model.py` validation system with modern Pydantic 2.0+ models. The validation is:
+This replaces the old validation system with modern Pydantic 2.0+ models. The validation is:
 
 - More comprehensive
 - Better error messages
 - Type-safe
 - Easier to extend
 - Compatible with modern Python tooling
+- **Shared between both tools** (new!)
 
 ## Adding New Validations
 
-To add new validation rules, edit `coldpress/model.py`:
+To add new validation rules, edit `coldpress_common/model.py`:
 
 1. Add fields to the appropriate Pydantic model
 2. Add `@field_validator` or `@model_validator` decorators for custom logic
-3. Update this documentation
-4. Add test cases to `test_validation.py`
+3. Export the function in `coldpress_common/__init__.py`
+4. Update this documentation
+5. Add test cases to `test_validation.py`
 
 Example:
 
 ```python
+# In coldpress_common/model.py
 class TaskSpec(BaseModel):
     name: str
     

@@ -8,6 +8,8 @@ import subprocess
 import shutil
 
 from .generator import manifests_to_yaml
+from coldpress_common import validate_project_config, validate_user_config
+from pydantic import ValidationError
 
 # Default directories (can be overridden with environment variables)
 PROJECT_DIR = os.getenv("COLDPRESS_PROJECT_DIR", "projects")
@@ -115,12 +117,16 @@ def project(config_file, output, dry_run):
         click.echo(f"Error: Config file not found: {config_file}", err=True)
         return 1
 
-    # Load project config
+    # Load and validate project config
     with open(config_file, "r") as f:
-        config = yaml.safe_load(f)
+        config_data = yaml.safe_load(f)
 
-    if "namespace" not in config:
-        click.echo("Error: Project config must include 'namespace'", err=True)
+    try:
+        validated_config = validate_project_config(config_data)
+        # Convert back to dict for compatibility with downstream code
+        config = config_data
+    except ValidationError as e:
+        click.echo(f"Error: Project config validation failed:\n{e}", err=True)
         return 1
 
     return apply_project_config(config, output, dry_run)
@@ -153,12 +159,16 @@ def user(config_file, output, dry_run):
         click.echo(f"Error: Config file not found: {config_file}", err=True)
         return 1
 
-    # Load user config
+    # Load and validate user config
     with open(config_file, "r") as f:
-        config = yaml.safe_load(f)
+        config_data = yaml.safe_load(f)
 
-    if "username" not in config:
-        click.echo("Error: User config must include 'username'", err=True)
+    try:
+        validated_config = validate_user_config(config_data)
+        # Convert back to dict for compatibility with downstream code
+        config = config_data
+    except ValidationError as e:
+        click.echo(f"Error: User config validation failed:\n{e}", err=True)
         return 1
 
     return apply_user_config(config, output, dry_run)
@@ -453,11 +463,18 @@ def _verify_pvc(kubectl_cmd, pvc_name, namespace, pvc_type):
 def _verify_project(kubectl_cmd, project_path):
     """Verify a single project's resources."""
     with open(project_path, "r") as f:
-        project_config = yaml.safe_load(f)
+        project_config_data = yaml.safe_load(f)
 
-    project_name = project_config.get("project")
-    namespace = project_config.get("namespace")
-    storage = project_config.get("storage", {})
+    # Validate project config
+    try:
+        validated_config = validate_project_config(project_config_data)
+    except ValidationError as e:
+        click.echo(f"Error: Invalid project config in {project_path}:\n{e}", err=True)
+        return False
+
+    project_name = project_config_data.get("project")
+    namespace = project_config_data.get("namespace")
+    storage = project_config_data.get("storage", {})
 
     click.echo(f"Project: {project_name}")
     click.echo(f"  Config: {os.path.basename(project_path)}")

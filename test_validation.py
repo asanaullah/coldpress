@@ -2,7 +2,7 @@
 """Test script to demonstrate Coldpress YAML validation."""
 
 import yaml
-from coldpress.model import (
+from coldpress_common import (
     validate_config,
     validate_task_specs,
     validate_project_config,

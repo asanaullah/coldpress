@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from .allocator import allocate_node
 from .generator import generate_jobset, jobset_to_yaml, services_to_yaml
 from .script_gen import write_scripts
-from .model import validate_config, validate_project_config, validate_task_specs
+from coldpress_common import validate_config, validate_project_config, validate_task_specs
 from pydantic import ValidationError
 
 # Default directories (can be overridden with environment variables)

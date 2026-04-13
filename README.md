@@ -102,6 +102,7 @@ Cleanup (preserves results in PVC):
 - **Result Collection** - Organized storage in user PVCs with discovery snapshots
 - **Log Capture** - Save pod logs to persistent storage
 - **File Injection** - Mount local files via ConfigMaps
+- **YAML Validation** - Pydantic-based schema validation catches errors before cluster operations
 - **Transparent Workflow** - All manifests and scripts generated locally for inspection
 
 ## Complete Tutorial
@@ -117,6 +118,7 @@ See [steps.md](steps.md) for a detailed step-by-step walkthrough of running the 
 
 - [steps.md](steps.md) - Complete PyTorch DDP training walkthrough
 - [docs/README.md](docs/README.md) - Architecture and detailed documentation
+- [docs/VALIDATION.md](docs/VALIDATION.md) - YAML validation system documentation
 - [examples/README.md](examples/README.md) - Example workloads and templates
 - [TODO.md](TODO.md) - Known limitations and planned features
 
@@ -126,6 +128,7 @@ See [steps.md](steps.md) for a detailed step-by-step walkthrough of running the 
 coldpress/
 ├── coldpress/              # CLI: Job manifest generator
 ├── coldpress_setup/        # CLI: Cluster setup and configuration
+├── coldpress_common/       # Shared validation models (Pydantic)
 ├── discovery/              # Hardware discovery pod templates
 ├── projects/               # Example project configs (namespace, storage)
 ├── examples/               # Example workloads (config.yaml + job-spec.yaml)

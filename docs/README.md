@@ -420,6 +420,10 @@ coldpress_setup/
 ├── generator.py      # Manifest generation
 └── cli.py           # Config CLI
 
+coldpress_common/    # Shared validation models
+├── __init__.py
+└── model.py         # Pydantic models for YAML validation
+
 discovery/           # Hardware discovery pod templates
 ├── user_snapshot.yaml
 
