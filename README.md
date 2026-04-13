@@ -44,7 +44,7 @@ Coldpress is a prescriptive manifest generator that reduces the effort and exper
 ├─────────────────────────────────────────────────────────────────┤
 │ 1. coldpress generate --config job.yaml → output/job-name/     │
 │    - jobset.yaml (Kubernetes manifest)                          │
-│    - run.sh, monitor.sh, logs.sh, cleanup.sh (helper scripts)  │
+│    - run.sh, monitor.sh, logs.sh, explore.sh, cp.sh, cleanup.sh │
 │                                                                 │
 │ 2. User reviews jobset.yaml                                     │
 │                                                                 │
@@ -61,7 +61,9 @@ Coldpress is a prescriptive manifest generator that reduces the effort and exper
 │                                                                 │
 │ 7. ./explore.sh opens interactive shell to browse results      │
 │                                                                 │
-│ 8. ./cleanup.sh deletes JobSet (preserves results in PVC)      │
+│ 8. ./cp.sh copies results from PVC (optional)                  │
+│                                                                 │
+│ 9. ./cleanup.sh deletes JobSet (preserves results in PVC)      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
