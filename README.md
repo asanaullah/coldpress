@@ -52,10 +52,18 @@ coldpress-setup apply user coldpress-user.yaml
 - Project must be configured first (creates the Role that user RBAC references)
 
 This creates:
-- Node labels (`coldpress.node=0`, `coldpress.node=1`)
-- Kueue ResourceFlavors and ClusterQueue
+- Kueue ResourceFlavors and ClusterQueue (with nodeLabel selectors)
 - Namespace with LocalQueue and PVC (500Gi)
+- Namespace labeled with `kueue.openshift.io/managed=true`
 - RoleBindings granting user permissions to submit JobSets in specified namespaces
+
+**Note:** After applying cluster config, manually label your cluster nodes:
+```bash
+oc label node <node-hostname-0> coldpress.node=0
+oc label node <node-hostname-1> coldpress.node=1
+```
+
+**TODO:** Replace manual node labelling with an automated approach
 
 ### 3. Generate Job
 

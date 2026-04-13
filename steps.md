@@ -64,10 +64,10 @@ uv pip install -e .
 
 ```bash
 coldpress --version
-# Output: coldpress, version 2.0.0
+# Output: coldpress, version 0.2.0
 
 coldpress-setup --version
-# Output: coldpress-setup, version 2.0.0
+# Output: coldpress-setup, version 0.2.0
 ```
 
 ### For subsequent sessions
@@ -124,6 +124,24 @@ cluster-queue-coldpress   5s
 NAME    AGE
 node0   5s
 node1   5s
+```
+
+**TODO:** Replace manual node labelling with an automated approach
+
+**Manual node labeling (temporary):**
+
+Currently, you must manually label cluster nodes with `coldpress.node` IDs to match the ResourceFlavor definitions:
+
+```bash
+# List nodes to identify which ones to label
+oc get nodes
+
+# Label each node with its coldpress.node ID
+oc label node <node-0-hostname> coldpress.node=0
+oc label node <node-1-hostname> coldpress.node=1
+
+# Verify
+oc get nodes --show-labels | grep coldpress.node
 ```
 
 ---
