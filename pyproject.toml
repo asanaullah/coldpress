@@ -20,5 +20,10 @@ dependencies = [
 coldpress = "coldpress.cli:cli"
 coldpress-setup = "coldpress_setup.cli:cli"
 
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0.0",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["coldpress", "coldpress_setup", "coldpress_common"]
