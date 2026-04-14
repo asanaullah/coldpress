@@ -298,10 +298,7 @@ def generate_sriov_network_attachments(namespace, roce_nics):
             "cniVersion": "0.3.1",
             "name": f"sriov-rdma-net-{nic_name}",
             "type": "sriov",
-            "ipam": {
-                "type": "whereabouts",
-                "range": "192.168.1.0/24"
-            }
+            "ipam": {"type": "whereabouts", "range": "192.168.1.0/24"},
         }
 
         attachment = {
@@ -315,9 +312,7 @@ def generate_sriov_network_attachments(namespace, roce_nics):
                     "k8s.v1.cni.cncf.io/resourceName": f"openshift.io/{nic_name}np0rdma"
                 },
             },
-            "spec": {
-                "config": json.dumps(cni_config)
-            },
+            "spec": {"config": json.dumps(cni_config)},
         }
         attachments.append(attachment)
     return attachments
@@ -436,7 +431,9 @@ def generate_all_manifests(config):
 
         # Storage PVC
         manifests["storage"].append(
-            generate_pvc(f"coldpress-{ns_name}-storage", ns_name, storage_size, storage_class)
+            generate_pvc(
+                f"coldpress-{ns_name}-storage", ns_name, storage_size, storage_class
+            )
         )
 
         # RBAC

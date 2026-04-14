@@ -95,7 +95,9 @@ def _substitute_dns_in_args(tasks, job_id, namespace):
 
             for task_name, target_task_id in task_names.items():
                 if f"http://{task_name}:" in arg or f"https://{task_name}:" in arg:
-                    service_name = f"coldpress-s-{job_id}-{target_task_id}.{namespace}.svc"
+                    service_name = (
+                        f"coldpress-s-{job_id}-{target_task_id}.{namespace}.svc"
+                    )
                     arg = arg.replace(f"://{task_name}:", f"://{service_name}:")
             args[i] = arg
 
@@ -272,10 +274,12 @@ def generate_jobset(job_spec, node_assignments):
 
     # Build JobSet manifest with standard labels
     jobset_labels = COLDPRESS_LABELS.copy()
-    jobset_labels.update({
-        "kueue.x-k8s.io/queue-name": f"coldpress-local-queue-{namespace}",
-        "coldpress.io/job-id": job_id,
-    })
+    jobset_labels.update(
+        {
+            "kueue.x-k8s.io/queue-name": f"coldpress-local-queue-{namespace}",
+            "coldpress.io/job-id": job_id,
+        }
+    )
 
     jobset = {
         "apiVersion": "jobset.x-k8s.io/v1alpha2",
@@ -464,7 +468,9 @@ def _add_task_volumes(volumes, container_spec, task, task_id, base_dir):
         if mount_path:
             if vol_name == "results":
                 # Mount results to task-specific subdirectory
-                task_subpath = f"{base_dir}/task-{task_id}" if base_dir else vol.get("subPath", "")
+                task_subpath = (
+                    f"{base_dir}/task-{task_id}" if base_dir else vol.get("subPath", "")
+                )
                 container_spec["volumeMounts"].append(
                     {
                         "name": "coldpress-data",
@@ -585,10 +591,12 @@ def create_service(task, task_id, job_id, namespace):
 
         # Merge standard labels with job-specific labels
         service_labels = COLDPRESS_LABELS.copy()
-        service_labels.update({
-            "coldpress/gid": job_id,
-            "coldpress.io/job-id": job_id,
-        })
+        service_labels.update(
+            {
+                "coldpress/gid": job_id,
+                "coldpress.io/job-id": job_id,
+            }
+        )
 
         service = {
             "apiVersion": "v1",
@@ -653,7 +661,11 @@ def build_discovery_init_container(template_path, task_id, base_dir, data_pvc_na
 
         # Update volume mounts to use PVC with task-specific path
         container["volumeMounts"] = [
-            {"name": "coldpress-data", "mountPath": "/tmp/result", "subPath": task_result_path}
+            {
+                "name": "coldpress-data",
+                "mountPath": "/tmp/result",
+                "subPath": task_result_path,
+            }
         ]
 
         # Add rename command to output discovery_{template_name}.json

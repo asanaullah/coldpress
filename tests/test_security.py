@@ -39,9 +39,9 @@ def test_json_injection_fix():
 
         # Verify structure
         if "cniVersion" in config and "type" in config and "ipam" in config:
-            print(f"   ✅ Correct CNI config structure")
+            print("   ✅ Correct CNI config structure")
         else:
-            print(f"   ❌ Missing required CNI config fields")
+            print("   ❌ Missing required CNI config fields")
             failed += 1
 
     print(f"\nJSON tests: {passed} passed, {failed} failed")
@@ -77,7 +77,7 @@ def test_kubernetes_name_validation():
 
     for name, max_len, should_pass, description in test_cases:
         try:
-            result = validate_kubernetes_name(name, max_length=max_len)
+            validate_kubernetes_name(name, max_length=max_len)
             if should_pass:
                 print(f"✅ {description}: '{name}' accepted")
                 passed += 1
@@ -104,7 +104,7 @@ def test_model_validation():
 
     # Test valid namespace
     try:
-        config = validate_project_config(
+        validate_project_config(
             {
                 "namespace": "valid-namespace",
                 "storage": {"results": "pvc-name"},
@@ -117,7 +117,7 @@ def test_model_validation():
 
     # Test invalid namespace (uppercase)
     try:
-        config = validate_project_config(
+        validate_project_config(
             {
                 "namespace": "Invalid-Namespace",
                 "storage": {"results": "pvc-name"},
@@ -125,12 +125,12 @@ def test_model_validation():
         )
         print("❌ Invalid namespace should have been rejected: Invalid-Namespace")
         return False
-    except ValidationError as e:
-        print(f"✅ Invalid namespace rejected: Invalid-Namespace")
+    except ValidationError:
+        print("✅ Invalid namespace rejected: Invalid-Namespace")
 
     # Test valid username
     try:
-        config = validate_user_config(
+        validate_user_config(
             {"username": "valid-user", "namespaces": ["namespace1", "namespace2"]}
         )
         print("✅ Valid username accepted: valid-user")
@@ -140,27 +140,25 @@ def test_model_validation():
 
     # Test invalid username (underscore)
     try:
-        config = validate_user_config(
-            {"username": "invalid_user", "namespaces": ["namespace1"]}
-        )
+        validate_user_config({"username": "invalid_user", "namespaces": ["namespace1"]})
         print("❌ Invalid username should have been rejected: invalid_user")
         return False
-    except ValidationError as e:
-        print(f"✅ Invalid username rejected: invalid_user")
+    except ValidationError:
+        print("✅ Invalid username rejected: invalid_user")
 
     # Test invalid namespace in list
     try:
-        config = validate_user_config(
+        validate_user_config(
             {"username": "valid-user", "namespaces": ["Valid-Namespace"]}
         )
         print("❌ Invalid namespace in list should have been rejected")
         return False
-    except ValidationError as e:
-        print(f"✅ Invalid namespace in list rejected")
+    except ValidationError:
+        print("✅ Invalid namespace in list rejected")
 
     # Test valid task name
     try:
-        tasks = validate_task_specs(
+        validate_task_specs(
             [
                 {
                     "name": "valid-task",
@@ -175,7 +173,7 @@ def test_model_validation():
 
     # Test invalid task name (uppercase)
     try:
-        tasks = validate_task_specs(
+        validate_task_specs(
             [
                 {
                     "name": "Invalid-Task",
@@ -185,8 +183,8 @@ def test_model_validation():
         )
         print("❌ Invalid task name should have been rejected: Invalid-Task")
         return False
-    except (ValidationError, ValueError) as e:
-        print(f"✅ Invalid task name rejected: Invalid-Task")
+    except (ValidationError, ValueError):
+        print("✅ Invalid task name rejected: Invalid-Task")
 
     print("\nAll model validation tests passed!")
     return True
@@ -198,7 +196,6 @@ def test_no_temp_file_vulnerabilities():
     print("Testing Temp File Security")
     print("=" * 60)
 
-    import os
     import glob
 
     # Search for hardcoded /tmp paths in source code (excluding tests)

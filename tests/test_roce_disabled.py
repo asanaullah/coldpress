@@ -2,7 +2,6 @@
 """Test that RoCE NIC support is properly disabled."""
 
 import sys
-import yaml
 from coldpress_setup.generator import (
     generate_cluster_queue,
     generate_kueue_resource_flavors,

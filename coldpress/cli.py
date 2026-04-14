@@ -9,7 +9,11 @@ from datetime import datetime, timezone
 
 from .generator import generate_jobset, jobset_to_yaml, services_to_yaml
 from .script_gen import write_scripts
-from coldpress_common import validate_config, validate_project_config, validate_task_specs
+from coldpress_common import (
+    validate_config,
+    validate_project_config,
+    validate_task_specs,
+)
 from pydantic import ValidationError
 
 # Default directories (can be overridden with environment variables)
@@ -335,14 +339,20 @@ def generate(config, project, discovery, output, node, file):
         if node:
             # CLI --node flag takes precedence
             manual_nodes = list(node)
-            click.echo(f"Using node assignments from CLI: {dict(enumerate(manual_nodes))}")
+            click.echo(
+                f"Using node assignments from CLI: {dict(enumerate(manual_nodes))}"
+            )
         elif nodes_from_config:
             # Use nodes from config file
             manual_nodes = nodes_from_config
-            click.echo(f"Using node assignments from config: {dict(enumerate(manual_nodes))}")
+            click.echo(
+                f"Using node assignments from config: {dict(enumerate(manual_nodes))}"
+            )
         else:
             # Default: let Kubernetes scheduler decide
-            click.echo("Node scheduling: Kubernetes will select any coldpress-labeled node")
+            click.echo(
+                "Node scheduling: Kubernetes will select any coldpress-labeled node"
+            )
 
         node_assignments = _allocate_nodes_for_tasks(task_specs, manual_nodes)
 
@@ -402,4 +412,5 @@ def generate(config, project, discovery, output, node, file):
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(cli())

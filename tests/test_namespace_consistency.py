@@ -62,14 +62,20 @@ def test_generate_namespace_function():
     # Test privileged namespace
     ns_priv = generate_namespace("privileged-namespace", "100Gi", privileged=True)
 
-    if ns_priv["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "privileged":
+    if (
+        ns_priv["metadata"]["labels"]["pod-security.kubernetes.io/enforce"]
+        == "privileged"
+    ):
         print("✅ Privileged namespace has privileged enforcement")
         passed += 1
     else:
         print("❌ Privileged namespace enforcement is wrong")
         failed += 1
 
-    if ns_priv["metadata"]["labels"]["pod-security.kubernetes.io/audit"] == "privileged":
+    if (
+        ns_priv["metadata"]["labels"]["pod-security.kubernetes.io/audit"]
+        == "privileged"
+    ):
         print("✅ Privileged namespace has privileged audit")
         passed += 1
     else:
@@ -99,10 +105,7 @@ def test_project_manifests_uses_generate_namespace():
     # Test regular project
     config = {
         "namespace": "my-project",
-        "storage": {
-            "results": "my-pvc",
-            "size": "200Gi"
-        }
+        "storage": {"results": "my-pvc", "size": "200Gi"},
     }
 
     manifests = generate_project_manifests(config)
@@ -135,24 +138,27 @@ def test_project_manifests_uses_generate_namespace():
     config_priv = {
         "namespace": "privileged-project",
         "privileged": True,
-        "storage": {
-            "results": "priv-pvc",
-            "size": "100Gi"
-        }
+        "storage": {"results": "priv-pvc", "size": "100Gi"},
     }
 
     manifests_priv = generate_project_manifests(config_priv)
     ns_priv = manifests_priv["namespaces"][0]
 
     # Should have privileged security labels
-    if ns_priv["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "privileged":
+    if (
+        ns_priv["metadata"]["labels"]["pod-security.kubernetes.io/enforce"]
+        == "privileged"
+    ):
         print("✅ Privileged project has privileged enforcement")
         passed += 1
     else:
         print("❌ Privileged project enforcement is wrong")
         failed += 1
 
-    if ns_priv["metadata"]["labels"]["pod-security.kubernetes.io/audit"] == "privileged":
+    if (
+        ns_priv["metadata"]["labels"]["pod-security.kubernetes.io/audit"]
+        == "privileged"
+    ):
         print("✅ Privileged project has privileged audit")
         passed += 1
     else:
@@ -202,7 +208,9 @@ def test_no_namespace_duplication():
     if namespace_kind_count == 0:
         print("✅ No inline Namespace kind definition found")
     else:
-        print(f"❌ Found {namespace_kind_count} inline Namespace definitions (duplication)")
+        print(
+            f"❌ Found {namespace_kind_count} inline Namespace definitions (duplication)"
+        )
         return False
 
     print("\nNo duplication tests: all passed")

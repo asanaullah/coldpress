@@ -19,9 +19,10 @@ This guide shows the typical workflow for a regular user submitting and managing
 
 **Command:**
 ```bash
-source .venv/bin/activate
 coldpress generate --config examples/pytorch_ddp_training/config.yaml
 ```
+
+> **Note:** If using uv, activate the venv first with `source .venv/bin/activate`. If using pipx, no activation needed.
 
 **Input files:**
 - `examples/pytorch_ddp_training/config.yaml` - Coldpress job configuration

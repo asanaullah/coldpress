@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Test script to verify Coldpress resource labels are applied correctly."""
 
-import yaml
-from coldpress.generator import generate_jobset, COLDPRESS_LABELS as COLDPRESS_JOB_LABELS
+from coldpress.generator import (
+    generate_jobset,
+    COLDPRESS_LABELS as COLDPRESS_JOB_LABELS,
+)
 from coldpress_setup.generator import (
     generate_project_manifests,
     generate_user_rbac,
@@ -23,8 +25,12 @@ def test_label_constants():
         "app.kubernetes.io/version": "0.2.0",
     }
 
-    assert COLDPRESS_JOB_LABELS == expected, f"Job labels mismatch: {COLDPRESS_JOB_LABELS}"
-    assert COLDPRESS_SETUP_LABELS == expected, f"Setup labels mismatch: {COLDPRESS_SETUP_LABELS}"
+    assert COLDPRESS_JOB_LABELS == expected, (
+        f"Job labels mismatch: {COLDPRESS_JOB_LABELS}"
+    )
+    assert COLDPRESS_SETUP_LABELS == expected, (
+        f"Setup labels mismatch: {COLDPRESS_SETUP_LABELS}"
+    )
     print("✅ Label constants match expected values")
 
 
@@ -203,7 +209,9 @@ def main():
     print("  - app.kubernetes.io/version: 0.2.0")
     print("  - coldpress.io/job-id: {job_name} (for job resources)")
     print("\nQuery all resources:")
-    print("  kubectl get all,pvc,configmap,rolebinding -A -l app.kubernetes.io/managed-by=coldpress")
+    print(
+        "  kubectl get all,pvc,configmap,rolebinding -A -l app.kubernetes.io/managed-by=coldpress"
+    )
     print("=" * 60 + "\n")
 
 

@@ -92,20 +92,85 @@ Coldpress is a prescriptive manifest generator that reduces the effort and exper
 
 ## Getting Started
 
-### Setup Environment (First Time)
+### Installation
 
-Install the Coldpress CLI tools:
+Choose the installation method that fits your use case:
+
+| Use Case | Command | Activation Needed? | Best For |
+|----------|---------|-------------------|----------|
+| **Running jobs** | `./setup-env.sh --pipx` | ❌ No | End users, cluster users |
+| **Running jobs + dev** | `./setup-env.sh --pipx-editable` | ❌ No | Users who also contribute |
+| **Development** | `./setup-env.sh --uv` | ✅ Yes | Contributors, testing changes |
+
+#### Quick Start
 
 ```bash
-./setup-env.sh
+# For end users (global install, no activation needed)
+./setup-env.sh --pipx
+coldpress --version
+
+# For developers (local venv, requires activation)
+./setup-env.sh --uv
 source .venv/bin/activate
+coldpress --version
 ```
 
+#### For End Users (pipx)
+
+**pipx** installs Coldpress in an isolated environment with global CLI access - no activation needed.
+
+```bash
+# Install with pipx (recommended for end users)
+./setup-env.sh --pipx
+
+# Commands work globally, from any directory
+coldpress --help
+coldpress-setup --help
+```
+
+**Install in editable mode** (get updates as you pull from git):
+```bash
+./setup-env.sh --pipx-editable
+```
+
+**Manage installation:**
+```bash
+pipx upgrade coldpress    # Upgrade to latest version
+pipx reinstall coldpress  # Reinstall
+pipx uninstall coldpress  # Remove completely
+pipx list                 # Show installed packages
+```
+
+#### For Developers (uv)
+
+**uv** provides fast, reproducible virtual environments for development work.
+
+```bash
+# One-time setup (installs uv, creates venv, installs coldpress)
+./setup-env.sh --uv
+# or just:
+./setup-env.sh  # --uv is the default
+
+# Activate the environment
+source .venv/bin/activate
+
+# Use coldpress (while venv is active)
+coldpress --help
+
+# Or use without activation
+.venv/bin/coldpress --help
+```
 
 **For subsequent sessions:**
 ```bash
 source .venv/bin/activate
 ```
+
+**Why uv for development?**
+- Fast dependency resolution and installation
+- Reproducible builds
+- Editable install by default (changes reflect immediately)
+- Isolated from system Python
 
 ### For Administrators
 

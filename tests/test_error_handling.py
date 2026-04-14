@@ -7,12 +7,7 @@ import subprocess
 
 def run_command(cmd, expected_exit_code):
     """Run command and check exit code."""
-    result = subprocess.run(
-        cmd,
-        shell=True,
-        capture_output=True,
-        text=True
-    )
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     return result.returncode == expected_exit_code, result.returncode
 
 
@@ -90,7 +85,9 @@ def test_specific_exceptions():
     if result is None:
         print("✅ build_discovery_init_container handles missing template")
     else:
-        print("❌ build_discovery_init_container should return None for missing template")
+        print(
+            "❌ build_discovery_init_container should return None for missing template"
+        )
 
     # Test build_discovery_job with missing template
     result = gen.build_discovery_job(
