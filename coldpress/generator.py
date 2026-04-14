@@ -119,6 +119,7 @@ def _build_init_jobs(base_dir, data_pvc_name, num_tasks):
 def _build_task_jobs(
     tasks,
     job_id,
+    jobset_name,
     namespace,
     job_spec,
     node_assignments,
@@ -130,7 +131,12 @@ def _build_task_jobs(
     discovery_template,
     discovery_task_indices,
 ):
-    """Build replicated jobs for all tasks."""
+    """Build replicated jobs for all tasks.
+
+    Args:
+        job_id: Base job name for DNS (e.g., "ddp-training")
+        jobset_name: Full JobSet name with prefix for labels (e.g., "coldpress-ddp-training")
+    """
     replicated_jobs = []
     services = []
 
@@ -145,6 +151,7 @@ def _build_task_jobs(
             task,
             task_id,
             job_id,
+            jobset_name,
             node_id,
             container_spec,
             data_pvc_name,
@@ -164,7 +171,7 @@ def _build_task_jobs(
 
         blocking_type = task.get("blocking", "completion")
         if blocking_type == "endpoint":
-            service = create_service(task, task_id, job_id, namespace)
+            service = create_service(task, task_id, job_id, jobset_name, namespace)
             if service:
                 services.append(service)
 
@@ -208,6 +215,7 @@ def generate_jobset(job_spec, node_assignments):
         tuple: (JobSet manifest, services list, base_dir)
     """
     job_id = job_spec["name"]
+    jobset_name = f"coldpress-{job_id}"
     namespace = job_spec["namespace"]
     tasks = job_spec.get("tasks", [])
     storage = job_spec.get("storage", {})
@@ -244,6 +252,7 @@ def generate_jobset(job_spec, node_assignments):
     task_jobs, services = _build_task_jobs(
         tasks,
         job_id,
+        jobset_name,
         namespace,
         job_spec,
         node_assignments,
@@ -278,7 +287,7 @@ def generate_jobset(job_spec, node_assignments):
     jobset_labels.update(
         {
             "kueue.x-k8s.io/queue-name": f"coldpress-local-queue-{namespace}",
-            "coldpress.io/job-id": job_id,
+            "coldpress.io/job-id": jobset_name,
         }
     )
 
@@ -286,7 +295,7 @@ def generate_jobset(job_spec, node_assignments):
         "apiVersion": "jobset.x-k8s.io/v1alpha2",
         "kind": "JobSet",
         "metadata": {
-            "name": f"coldpress-{job_id}",
+            "name": jobset_name,
             "namespace": namespace,
             "labels": jobset_labels,
             "annotations": {
@@ -519,13 +528,19 @@ def build_pod_spec(
     task,
     task_id,
     job_id,
+    jobset_name,
     node_id,
     container_spec,
     data_pvc_name,
     configmap_info=None,
     base_dir=None,
 ):
-    """Build pod specification."""
+    """Build pod specification.
+
+    Args:
+        job_id: Base job name for DNS
+        jobset_name: Full JobSet name with prefix for labels
+    """
     volumes = [
         {
             "name": "coldpress-data",
@@ -541,7 +556,7 @@ def build_pod_spec(
         "metadata": {
             "labels": {
                 "app": f"task-{task_id}",
-                "coldpress/gid": job_id,
+                "coldpress/gid": jobset_name,
             },
             "annotations": task.get("annotations", {}),
         },
@@ -580,8 +595,13 @@ def build_pod_spec(
     return pod_spec
 
 
-def create_service(task, task_id, job_id, namespace):
-    """Create Kubernetes Service for endpoint blocking."""
+def create_service(task, task_id, job_id, jobset_name, namespace):
+    """Create Kubernetes Service for endpoint blocking.
+
+    Args:
+        job_id: Base job name for service naming (e.g., "ddp-training")
+        jobset_name: Full JobSet name with prefix for labels (e.g., "coldpress-ddp-training")
+    """
     health_check = task.get("health_check")
     if not health_check:
         return None
@@ -594,8 +614,8 @@ def create_service(task, task_id, job_id, namespace):
         service_labels = COLDPRESS_LABELS.copy()
         service_labels.update(
             {
-                "coldpress/gid": job_id,
-                "coldpress.io/job-id": job_id,
+                "coldpress/gid": jobset_name,
+                "coldpress.io/job-id": jobset_name,
             }
         )
 
@@ -610,7 +630,7 @@ def create_service(task, task_id, job_id, namespace):
             "spec": {
                 "selector": {
                     "app": f"task-{task_id}",
-                    "coldpress/gid": job_id,
+                    "coldpress/gid": jobset_name,
                 },
                 "ports": [{"port": port, "targetPort": port}],
                 "type": "ClusterIP",
