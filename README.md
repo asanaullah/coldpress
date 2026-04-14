@@ -264,7 +264,7 @@ bash tests/test_exit_codes.sh      # Shell exit codes
 
 ### CI/CD
 
-Tests run automatically on every push and pull request via GitHub Actions. The workflow tests on Python 3.9, 3.10, 3.11, and 3.12.
+Tests run automatically on every push and pull request via GitHub Actions. The workflow tests on Python 3.9, 3.10, 3.11, 3.12, 3.13, and 3.14.
 
 See `tests/README.md` for detailed test documentation.
 

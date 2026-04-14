@@ -77,6 +77,8 @@ Tests run automatically on:
 - Python 3.10
 - Python 3.11
 - Python 3.12
+- Python 3.13
+- Python 3.14
 
 **View results:**
 - Check the Actions tab on GitHub

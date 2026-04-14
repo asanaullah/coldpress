@@ -8,7 +8,7 @@ All notable changes to Coldpress will be documented in this file.
 - **Comprehensive test suite with CI/CD** - Automated testing on every commit
   - Organized all tests in `tests/` directory
   - Created `tests/run_all_tests.sh` to run full test suite locally
-  - GitHub Actions workflow runs tests on Python 3.9, 3.10, 3.11, 3.12 (also verified on 3.14)
+  - GitHub Actions workflow runs tests on Python 3.9, 3.10, 3.11, 3.12, 3.13, 3.14
   - Tests cover: validation, labels, security, error handling, RoCE disabled, namespace consistency
   - All tests pass on multiple Python versions
   - Validates fixes for GitHub issue #37

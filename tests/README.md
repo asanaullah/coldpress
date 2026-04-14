@@ -80,7 +80,7 @@ bash tests/test_exit_codes.sh
 ### GitHub Actions
 Tests run automatically on every push and pull request via GitHub Actions (`.github/workflows/tests.yml`).
 
-The workflow runs all tests on Python 3.9, 3.10, 3.11, and 3.12.
+The workflow runs all tests on Python 3.9, 3.10, 3.11, 3.12, 3.13, and 3.14.
 
 ## Test Coverage
 
