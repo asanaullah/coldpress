@@ -2,6 +2,7 @@
 """JobSet YAML generation for Coldpress jobs."""
 
 import os
+import sys
 import yaml
 import hashlib
 import shlex
@@ -618,7 +619,7 @@ def create_service(task, task_id, job_id, namespace):
         return service
     except (ValueError, AttributeError, KeyError) as e:
         # URL parsing failed or service configuration is invalid
-        print(f"Warning: Could not create service for task {task_id}: {e}")
+        sys.stderr.write(f"Warning: Could not create service for task {task_id}: {e}\n")
         return None
 
 
@@ -679,7 +680,9 @@ def build_discovery_init_container(template_path, task_id, base_dir, data_pvc_na
 
         return container
     except (FileNotFoundError, yaml.YAMLError, KeyError, IndexError) as e:
-        print(f"Warning: Could not load discovery template {template_path}: {e}")
+        sys.stderr.write(
+            f"Warning: Could not load discovery template {template_path}: {e}\n"
+        )
         return None
 
 
@@ -834,7 +837,9 @@ def build_discovery_job(template_path, base_dir, data_pvc_name, node_id):
             },
         }
     except (FileNotFoundError, yaml.YAMLError, KeyError, IndexError) as e:
-        print(f"Warning: Could not load discovery template {template_path}: {e}")
+        sys.stderr.write(
+            f"Warning: Could not load discovery template {template_path}: {e}\n"
+        )
         return None
 
 

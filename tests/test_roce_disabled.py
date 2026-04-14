@@ -2,6 +2,7 @@
 """Test that RoCE NIC support is properly disabled."""
 
 import sys
+import pytest
 from coldpress_setup.generator import (
     generate_cluster_queue,
     generate_kueue_resource_flavors,
@@ -27,32 +28,21 @@ def test_cluster_queue_no_roce():
     resources = cq["spec"]["resourceGroups"][0]["coveredResources"]
     expected = ["cpu", "memory", "nvidia.com/gpu"]
 
-    if resources == expected:
-        print(f"✅ Covered resources correct: {resources}")
-    else:
-        print(f"❌ Covered resources unexpected: {resources}")
-        return False
+    assert resources == expected, f"Covered resources unexpected: {resources}"
+    print(f"✅ Covered resources correct: {resources}")
 
     # Check that no RoCE resources exist
     roce_resources = [r for r in resources if "eno" in r or "rdma" in r]
-    if roce_resources:
-        print(f"❌ Found RoCE resources in covered list: {roce_resources}")
-        return False
-    else:
-        print("✅ No RoCE resources in covered list")
+    assert not roce_resources, f"Found RoCE resources in covered list: {roce_resources}"
+    print("✅ No RoCE resources in covered list")
 
     # Check each flavor's resources
     for i, flavor in enumerate(cq["spec"]["resourceGroups"][0]["flavors"]):
         node_resources = [r["name"] for r in flavor["resources"]]
         roce_in_node = [r for r in node_resources if "eno" in r or "rdma" in r]
 
-        if roce_in_node:
-            print(f"❌ Node {i} has RoCE resources: {roce_in_node}")
-            return False
-        else:
-            print(f"✅ Node {i} has no RoCE resources: {node_resources}")
-
-    return True
+        assert not roce_in_node, f"Node {i} has RoCE resources: {roce_in_node}"
+        print(f"✅ Node {i} has no RoCE resources: {node_resources}")
 
 
 def test_resource_flavors_no_roce():
@@ -68,16 +58,11 @@ def test_resource_flavors_no_roce():
 
     flavors = generate_kueue_resource_flavors(nodes)
 
-    if len(flavors) == 2:
-        print(f"✅ Generated {len(flavors)} ResourceFlavors (one per node)")
-    else:
-        print(f"❌ Expected 2 ResourceFlavors, got {len(flavors)}")
-        return False
+    assert len(flavors) == 2, f"Expected 2 ResourceFlavors, got {len(flavors)}"
+    print(f"✅ Generated {len(flavors)} ResourceFlavors (one per node)")
 
     for i, flavor in enumerate(flavors):
         print(f"✅ ResourceFlavor node{i}: {flavor['metadata']['name']}")
-
-    return True
 
 
 def test_no_network_attachments():
@@ -105,24 +90,17 @@ def test_no_network_attachments():
     elif not manifests["network"]:
         print("✅ 'network' category is empty")
     else:
-        print(f"❌ Found {len(manifests['network'])} network resources")
-        return False
+        pytest.fail(f"Found {len(manifests['network'])} network resources")
 
     # Convert to YAML and check
     yaml_output = manifests_to_yaml(manifests)
-    if "NetworkAttachmentDefinition" in yaml_output:
-        print("❌ Found NetworkAttachmentDefinition in YAML output")
-        return False
-    else:
-        print("✅ No NetworkAttachmentDefinition in YAML output")
+    assert "NetworkAttachmentDefinition" not in yaml_output, (
+        "Found NetworkAttachmentDefinition in YAML output"
+    )
+    print("✅ No NetworkAttachmentDefinition in YAML output")
 
-    if "sriov" in yaml_output.lower():
-        print("❌ Found 'sriov' in YAML output")
-        return False
-    else:
-        print("✅ No 'sriov' references in YAML output")
-
-    return True
+    assert "sriov" not in yaml_output.lower(), "Found 'sriov' in YAML output"
+    print("✅ No 'sriov' references in YAML output")
 
 
 def test_roce_field_still_in_config():
@@ -146,10 +124,8 @@ def test_roce_field_still_in_config():
         print("✅ Cluster config with roce_nics validates successfully")
         print(f"   Node 0 roce_nics: {cluster_config.nodes[0].roce_nics}")
         print(f"   Node 1 roce_nics: {cluster_config.nodes[1].roce_nics}")
-        return True
     except Exception as e:
-        print(f"❌ Cluster config validation failed: {e}")
-        return False
+        pytest.fail(f"Cluster config validation failed: {e}")
 
 
 def main():
@@ -158,22 +134,13 @@ def main():
     print("ROCE NIC DISABLED TEST SUITE")
     print("=" * 60)
 
-    all_passed = True
+    try:
+        test_cluster_queue_no_roce()
+        test_resource_flavors_no_roce()
+        test_no_network_attachments()
+        test_roce_field_still_in_config()
 
-    if not test_cluster_queue_no_roce():
-        all_passed = False
-
-    if not test_resource_flavors_no_roce():
-        all_passed = False
-
-    if not test_no_network_attachments():
-        all_passed = False
-
-    if not test_roce_field_still_in_config():
-        all_passed = False
-
-    print("\n" + "=" * 60)
-    if all_passed:
+        print("\n" + "=" * 60)
         print("✅ All RoCE disabled tests passed!")
         print("=" * 60)
         print("\nRoCE NIC handling:")
@@ -183,8 +150,9 @@ def main():
         print("  ✅ Simplified cluster setup (GPU-only)")
         print("=" * 60)
         return 0
-    else:
-        print("❌ Some RoCE disabled tests failed")
+    except (AssertionError, Exception) as e:
+        print("\n" + "=" * 60)
+        print(f"❌ RoCE disabled test failed: {e}")
         print("=" * 60)
         return 1
 

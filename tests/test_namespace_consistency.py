@@ -90,7 +90,7 @@ def test_generate_namespace_function():
         failed += 1
 
     print(f"\ngenerate_namespace tests: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0, f"generate_namespace tests failed: {failed} failures"
 
 
 def test_project_manifests_uses_generate_namespace():
@@ -173,7 +173,7 @@ def test_project_manifests_uses_generate_namespace():
         failed += 1
 
     print(f"\nProject manifest tests: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0, f"Project manifest tests failed: {failed} failures"
 
 
 def test_no_namespace_duplication():
@@ -189,32 +189,26 @@ def test_no_namespace_duplication():
     source = inspect.getsource(generator.generate_project_manifests)
 
     # Should call generate_namespace function, not duplicate the logic
-    if "generate_namespace(" in source:
-        print("✅ generate_project_manifests calls generate_namespace()")
-    else:
-        print("❌ generate_project_manifests does not call generate_namespace()")
-        return False
+    assert "generate_namespace(" in source, (
+        "generate_project_manifests does not call generate_namespace()"
+    )
+    print("✅ generate_project_manifests calls generate_namespace()")
 
     # Should NOT have duplicated inline namespace creation
     ns_labels_count = source.count('ns_labels["kueue.openshift.io/managed"]')
     namespace_kind_count = source.count('"kind": "Namespace"')
 
-    if ns_labels_count == 0:
-        print("✅ No inline ns_labels assignment found")
-    else:
-        print(f"❌ Found {ns_labels_count} inline ns_labels assignments (duplication)")
-        return False
+    assert ns_labels_count == 0, (
+        f"Found {ns_labels_count} inline ns_labels assignments (duplication)"
+    )
+    print("✅ No inline ns_labels assignment found")
 
-    if namespace_kind_count == 0:
-        print("✅ No inline Namespace kind definition found")
-    else:
-        print(
-            f"❌ Found {namespace_kind_count} inline Namespace definitions (duplication)"
-        )
-        return False
+    assert namespace_kind_count == 0, (
+        f"Found {namespace_kind_count} inline Namespace definitions (duplication)"
+    )
+    print("✅ No inline Namespace kind definition found")
 
     print("\nNo duplication tests: all passed")
-    return True
 
 
 def main():
@@ -223,27 +217,23 @@ def main():
     print("NAMESPACE CONSISTENCY TEST SUITE")
     print("=" * 60)
 
-    all_passed = True
+    try:
+        # Test generate_namespace function
+        test_generate_namespace_function()
 
-    # Test generate_namespace function
-    if not test_generate_namespace_function():
-        all_passed = False
+        # Test project manifests use shared function
+        test_project_manifests_uses_generate_namespace()
 
-    # Test project manifests use shared function
-    if not test_project_manifests_uses_generate_namespace():
-        all_passed = False
+        # Test no duplication
+        test_no_namespace_duplication()
 
-    # Test no duplication
-    if not test_no_namespace_duplication():
-        all_passed = False
-
-    print("\n" + "=" * 60)
-    if all_passed:
+        print("\n" + "=" * 60)
         print("✅ All namespace consistency tests passed!")
         print("=" * 60)
         return 0
-    else:
-        print("❌ Some namespace consistency tests failed")
+    except (AssertionError, Exception) as e:
+        print("\n" + "=" * 60)
+        print(f"❌ Namespace consistency test failed: {e}")
         print("=" * 60)
         return 1
 

@@ -40,7 +40,7 @@ early rather than during job execution.
 """
 
 from typing import Any, Literal, Optional, Union
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # === Container and Resource Models ===
@@ -49,13 +49,11 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class ResourceSpec(BaseModel):
     """Resource requests or limits."""
 
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
     cpu: Optional[str] = None
     memory: Optional[str] = None
     nvidia_com_gpu: Optional[str] = Field(None, alias="nvidia.com/gpu")
-
-    class Config:
-        populate_by_name = True
-        extra = "allow"  # Allow additional resource types like RDMA NICs
 
 
 class ContainerResources(BaseModel):

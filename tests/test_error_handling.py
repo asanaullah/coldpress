@@ -58,7 +58,7 @@ def test_exit_codes():
     print(f"Passed: {passed}/{len(tests)}")
     print(f"Failed: {failed}/{len(tests)}")
 
-    return failed == 0
+    assert failed == 0, f"Exit code tests failed: {failed} failures"
 
 
 def test_specific_exceptions():
@@ -73,32 +73,24 @@ def test_specific_exceptions():
     # Test create_service with invalid URL
     task = {"health_check": None}
     result = gen.create_service(task, 0, "test", "default")
-    if result is None:
-        print("✅ create_service handles missing health_check")
-    else:
-        print("❌ create_service should return None for missing health_check")
+    assert result is None, "create_service should return None for missing health_check"
+    print("✅ create_service handles missing health_check")
 
     # Test build_discovery_init_container with missing template
     result = gen.build_discovery_init_container(
         "/tmp/non-existent-template.yaml", 0, "base", "pvc"
     )
-    if result is None:
-        print("✅ build_discovery_init_container handles missing template")
-    else:
-        print(
-            "❌ build_discovery_init_container should return None for missing template"
-        )
+    assert result is None, (
+        "build_discovery_init_container should return None for missing template"
+    )
+    print("✅ build_discovery_init_container handles missing template")
 
     # Test build_discovery_job with missing template
     result = gen.build_discovery_job(
         "/tmp/non-existent-template.yaml", "base", "pvc", "0"
     )
-    if result is None:
-        print("✅ build_discovery_job handles missing template")
-    else:
-        print("❌ build_discovery_job should return None for missing template")
-
-    return True
+    assert result is None, "build_discovery_job should return None for missing template"
+    print("✅ build_discovery_job handles missing template")
 
 
 def test_validation_errors():
@@ -114,8 +106,7 @@ def test_validation_errors():
     try:
         invalid_task = [{"containers": [{"name": "test", "image": "alpine"}]}]
         validate_task_specs(invalid_task)
-        print("❌ Should have caught missing 'name' field")
-        return False
+        raise AssertionError("Should have caught missing 'name' field")
     except (ValidationError, ValueError) as e:
         print("✅ Caught validation error for missing 'name' field")
         print(f"   Error message: {str(e).splitlines()[0][:70]}...")
@@ -130,13 +121,12 @@ def test_validation_errors():
             }
         ]
         validate_task_specs(invalid_task)
-        print("❌ Should have caught missing health_check for endpoint blocking")
-        return False
+        raise AssertionError(
+            "Should have caught missing health_check for endpoint blocking"
+        )
     except (ValidationError, ValueError) as e:
         print("✅ Caught validation error for endpoint blocking without health check")
         print(f"   Error message: {str(e).splitlines()[0][:70]}...")
-
-    return True
 
 
 def main():
@@ -145,22 +135,17 @@ def main():
     print("COLDPRESS ERROR HANDLING TEST SUITE")
     print("=" * 60)
 
-    all_passed = True
+    try:
+        # Test exit codes
+        test_exit_codes()
 
-    # Test exit codes
-    if not test_exit_codes():
-        all_passed = False
+        # Test specific exceptions
+        test_specific_exceptions()
 
-    # Test specific exceptions
-    if not test_specific_exceptions():
-        all_passed = False
+        # Test validation errors
+        test_validation_errors()
 
-    # Test validation errors
-    if not test_validation_errors():
-        all_passed = False
-
-    print("\n" + "=" * 60)
-    if all_passed:
+        print("\n" + "=" * 60)
         print("✅ All error handling tests passed!")
         print("=" * 60)
         print("\nError handling improvements:")
@@ -170,8 +155,9 @@ def main():
         print("  ✅ FileNotFoundError, yaml.YAMLError, KeyError, etc.")
         print("=" * 60)
         return 0
-    else:
-        print("❌ Some error handling tests failed")
+    except (AssertionError, Exception) as e:
+        print("\n" + "=" * 60)
+        print(f"❌ Error handling test failed: {e}")
         print("=" * 60)
         return 1
 

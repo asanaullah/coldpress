@@ -3,6 +3,7 @@
 
 import json
 import sys
+import pytest
 from coldpress_setup.generator import generate_sriov_network_attachments
 from coldpress_common import (
     validate_kubernetes_name,
@@ -45,7 +46,7 @@ def test_json_injection_fix():
             failed += 1
 
     print(f"\nJSON tests: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0, f"JSON injection tests failed: {failed} failures"
 
 
 def test_kubernetes_name_validation():
@@ -93,7 +94,7 @@ def test_kubernetes_name_validation():
                 failed += 1
 
     print(f"\nValidation tests: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0, f"Kubernetes name validation tests failed: {failed} failures"
 
 
 def test_model_validation():
@@ -112,8 +113,7 @@ def test_model_validation():
         )
         print("✅ Valid namespace accepted: valid-namespace")
     except ValidationError as e:
-        print(f"❌ Valid namespace rejected: {e}")
-        return False
+        pytest.fail(f"Valid namespace rejected: {e}")
 
     # Test invalid namespace (uppercase)
     try:
@@ -123,8 +123,7 @@ def test_model_validation():
                 "storage": {"results": "pvc-name"},
             }
         )
-        print("❌ Invalid namespace should have been rejected: Invalid-Namespace")
-        return False
+        pytest.fail("Invalid namespace should have been rejected: Invalid-Namespace")
     except ValidationError:
         print("✅ Invalid namespace rejected: Invalid-Namespace")
 
@@ -135,14 +134,12 @@ def test_model_validation():
         )
         print("✅ Valid username accepted: valid-user")
     except ValidationError as e:
-        print(f"❌ Valid username rejected: {e}")
-        return False
+        pytest.fail(f"Valid username rejected: {e}")
 
     # Test invalid username (underscore)
     try:
         validate_user_config({"username": "invalid_user", "namespaces": ["namespace1"]})
-        print("❌ Invalid username should have been rejected: invalid_user")
-        return False
+        pytest.fail("Invalid username should have been rejected: invalid_user")
     except ValidationError:
         print("✅ Invalid username rejected: invalid_user")
 
@@ -151,8 +148,7 @@ def test_model_validation():
         validate_user_config(
             {"username": "valid-user", "namespaces": ["Valid-Namespace"]}
         )
-        print("❌ Invalid namespace in list should have been rejected")
-        return False
+        pytest.fail("Invalid namespace in list should have been rejected")
     except ValidationError:
         print("✅ Invalid namespace in list rejected")
 
@@ -168,8 +164,7 @@ def test_model_validation():
         )
         print("✅ Valid task name accepted: valid-task")
     except (ValidationError, ValueError) as e:
-        print(f"❌ Valid task name rejected: {e}")
-        return False
+        pytest.fail(f"Valid task name rejected: {e}")
 
     # Test invalid task name (uppercase)
     try:
@@ -181,13 +176,11 @@ def test_model_validation():
                 }
             ]
         )
-        print("❌ Invalid task name should have been rejected: Invalid-Task")
-        return False
+        pytest.fail("Invalid task name should have been rejected: Invalid-Task")
     except (ValidationError, ValueError):
         print("✅ Invalid task name rejected: Invalid-Task")
 
     print("\nAll model validation tests passed!")
-    return True
 
 
 def test_no_temp_file_vulnerabilities():
@@ -232,11 +225,12 @@ def test_no_temp_file_vulnerabilities():
         print("❌ Found potential hardcoded temp file paths:")
         for filepath, line_num, line in vulnerable_files:
             print(f"   {filepath}:{line_num} - {line[:60]}...")
-        return False
+        pytest.fail(
+            f"Found {len(vulnerable_files)} potential hardcoded temp file paths"
+        )
     else:
         print("✅ No hardcoded temp file paths found in source code")
         print("   (Container mount paths like /tmp/result are safe)")
-        return True
 
 
 def main():
@@ -245,26 +239,20 @@ def main():
     print("COLDPRESS SECURITY TEST SUITE")
     print("=" * 60)
 
-    all_passed = True
+    try:
+        # Test JSON injection prevention
+        test_json_injection_fix()
 
-    # Test JSON injection prevention
-    if not test_json_injection_fix():
-        all_passed = False
+        # Test Kubernetes name validation
+        test_kubernetes_name_validation()
 
-    # Test Kubernetes name validation
-    if not test_kubernetes_name_validation():
-        all_passed = False
+        # Test model validation
+        test_model_validation()
 
-    # Test model validation
-    if not test_model_validation():
-        all_passed = False
+        # Test temp file security
+        test_no_temp_file_vulnerabilities()
 
-    # Test temp file security
-    if not test_no_temp_file_vulnerabilities():
-        all_passed = False
-
-    print("\n" + "=" * 60)
-    if all_passed:
+        print("\n" + "=" * 60)
         print("✅ All security tests passed!")
         print("=" * 60)
         print("\nSecurity improvements:")
@@ -274,8 +262,9 @@ def main():
         print("  ✅ No hardcoded temp file vulnerabilities")
         print("=" * 60)
         return 0
-    else:
-        print("❌ Some security tests failed")
+    except (AssertionError, Exception) as e:
+        print("\n" + "=" * 60)
+        print(f"❌ Security test failed: {e}")
         print("=" * 60)
         return 1
 
