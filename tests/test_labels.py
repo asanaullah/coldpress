@@ -60,7 +60,7 @@ def test_jobset_labels():
     assert "app.kubernetes.io/version" in labels
     assert labels["app.kubernetes.io/version"] == "0.2.0"
     assert "coldpress.io/job-id" in labels
-    assert labels["coldpress.io/job-id"] == "test-job"
+    assert labels["coldpress.io/job-id"] == "coldpress-test-job"
 
     print(f"✅ JobSet labels: {labels}")
 

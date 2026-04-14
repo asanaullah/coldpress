@@ -346,7 +346,7 @@ def generate_copy_script(job_name, namespace, storage_pvc, base_dir):
     """
     Generate cp.sh script to copy results from PVC to local directory.
 
-    Creates a temporary helper pod, mounts the PVC, and copies results using oc rsync.
+    Creates a temporary helper pod, mounts the PVC, and copies results using tar.
     Automatically cleans up the pod when the copy is complete.
 
     Args:
@@ -393,8 +393,8 @@ spec:
   restartPolicy: Never
   containers:
   - name: copier
-    image: registry.access.redhat.com/ubi9/ubi-minimal:latest
-    command: ["sleep", "infinity"]
+    image: registry.access.redhat.com/ubi9/ubi:latest
+    command: ["sleep", "300"]
     volumeMounts:
     - name: data
       mountPath: /data
@@ -423,8 +423,8 @@ mkdir -p "$DEST_DIR"
 
 echo ""
 echo "Copying files..."
-# Use oc rsync to copy the results directory
-oc rsync -n $NAMESPACE $POD_NAME:/data/$BASE_DIR/ "$DEST_DIR/" --delete=false
+# Use tar to copy files (more reliable than rsync)
+oc exec -n $NAMESPACE $POD_NAME -- tar czf - -C /data/$BASE_DIR . | tar xzf - -C "$DEST_DIR"
 
 echo ""
 echo "===== Copy Complete ====="

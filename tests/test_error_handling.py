@@ -72,7 +72,7 @@ def test_specific_exceptions():
 
     # Test create_service with invalid URL
     task = {"health_check": None}
-    result = gen.create_service(task, 0, "test", "default")
+    result = gen.create_service(task, 0, "test", "coldpress-test", "default")
     assert result is None, "create_service should return None for missing health_check"
     print("✅ create_service handles missing health_check")
 
