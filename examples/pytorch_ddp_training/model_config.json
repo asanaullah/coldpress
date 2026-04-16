@@ -1,0 +1,8 @@
+{
+  "model": "SimpleNet",
+  "hidden_size": 4096,
+  "dataset": "mnist",
+  "epochs": 50,
+  "batch_size": 128,
+  "learning_rate": 0.01
+}

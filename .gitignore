@@ -2,24 +2,8 @@
 coldpress_results/
 __pycache__/
 .venv/
+venv/
 .ruff_cache/
-.pytest_cache/
-
-# Test coverage
-.coverage
-.coverage.*
-htmlcov/
-coverage.xml
-*.cover
-.hypothesis/
-.tox/
-
-# pytest
-.pytest_cache/
-pytest.xml
-pytest-results.xml
-test-results/
-.pytest-results/
 
 # Python bytecode
 *.py[cod]
@@ -76,3 +60,13 @@ dmypy.json
 .env.local
 .envrc
 
+# Legacy code
+legacy/
+*.legacy
+
+# Generated output directories
+output/
+manifests/
+
+# User-specific files
+users/test.yaml

@@ -1,0 +1,73 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, v0.2 ]
+  pull_request:
+    branches: [ main, v0.2 ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14']
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install ruff
+
+    - name: Install Coldpress packages
+      run: |
+        pip install -e ".[test]"
+
+    - name: Run ruff linter
+      run: |
+        ruff check coldpress/ coldpress_setup/ coldpress_common/ tests/ --exclude venv --exclude legacy
+
+    - name: Run ruff formatter
+      run: |
+        ruff format --check coldpress/ coldpress_setup/ coldpress_common/ tests/ --exclude venv --exclude legacy
+
+    - name: Run validation tests
+      run: |
+        python tests/test_validation.py
+
+    - name: Run label tests
+      run: |
+        python tests/test_labels.py
+
+    - name: Run security tests
+      run: |
+        python tests/test_security.py
+
+    - name: Run error handling tests
+      run: |
+        python tests/test_error_handling.py
+
+    - name: Run RoCE disabled tests
+      run: |
+        python tests/test_roce_disabled.py
+
+    - name: Run namespace consistency tests
+      run: |
+        python tests/test_namespace_consistency.py
+
+    - name: Run exit code tests
+      run: |
+        bash tests/test_exit_codes.sh
+
+    - name: Summary
+      if: success()
+      run: |
+        echo "All tests passed on Python ${{ matrix.python-version }}!"

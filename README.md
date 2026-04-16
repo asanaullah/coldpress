@@ -1,264 +1,414 @@
-<!-- Assisted by: Gemini 3 -->
-# <sup>COLDPRESS</sup>
+<!-- Assisted by: Claude Sonnet 4.5 -->
+# Coldpress
 
-Coldpress is a Kubernetes-native optimization and orchestration framework designed to manage complex HPC-like workloads such as AI.
+[![Tests](https://github.com/asanaullah/coldpress/workflows/Tests/badge.svg?branch=v0.2)](https://github.com/asanaullah/coldpress/actions/workflows/tests.yml)
+
+Coldpress is a prescriptive manifest generator that reduces the effort and expertise needed to deploy complex AI/HPC workloads on Kubernetes clusters.
+
+**Two-piece architecture:**
+
+1. **Admin** (`coldpress-setup`) - Generates cluster setup manifests (node labels, queues, namespaces, RBAC)
+2. **User** (`coldpress`) - Generates job manifests from job specifications, creates JobSet YAML + helper scripts
+
+## How Does It Work?
+
+### Overall Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Prerequisites: Kueue and JobSet operators must be installed    │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ Phase 1: Admin Setup (One-time)                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. coldpress-setup generate cluster → manifests/cluster-*.yaml │
+│                                     → manifests/label-nodes-*.sh │
+│                                                                 │
+│ 2. ./manifests/label-nodes-*.sh (labels nodes for scheduling)  │
+│                                                                 │
+│ 3. oc apply -f manifests/cluster-*.yaml                         │
+│                                                                 │
+│ 4. coldpress-setup generate project → manifests/project-*.yaml │
+│                                                                 │
+│ 5. oc apply -f manifests/project-*.yaml                         │
+│                                                                 │
+│ 6. coldpress-setup generate user    → manifests/user-*.yaml    │
+│                                                                 │
+│ 7. oc apply -f manifests/user-*.yaml                            │
+│                                                                 │
+│ Creates: Node labels, ClusterQueue, ResourceFlavors,           │
+│          Namespaces, PVCs, RBAC                                 │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ Phase 2: User Workflow (Repeatable)                             │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. coldpress generate --config job.yaml → output/job-name/     │
+│    - jobset.yaml (Kubernetes manifest)                          │
+│    - run.sh, monitor.sh, logs.sh, explore.sh, cp.sh, cleanup.sh │
+│                                                                 │
+│ 2. User reviews jobset.yaml                                     │
+│                                                                 │
+│ 3. ./run.sh applies JobSet to cluster                           │
+│                                                                 │
+│ 4. Kueue schedules job when resources available                │
+│                                                                 │
+│ 5. Jobs execute: mkdir → task-0 → task-1 → ...                 │
+│    - Init containers capture hardware discovery                │
+│    - Main containers run workload                               │
+│    - Results saved to PVC in task-specific directories         │
+│                                                                 │
+│ 6. ./logs.sh captures logs to PVC                               │
+│                                                                 │
+│ 7. ./explore.sh opens interactive shell to browse results      │
+│                                                                 │
+│ 8. ./cp.sh copies results from PVC (optional)                  │
+│                                                                 │
+│ 9. ./cleanup.sh deletes JobSet (preserves results in PVC)      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### What Coldpress Does
+
+**For Administrators (`coldpress-setup`):**
+- Generates cluster-wide Kueue configuration (ClusterQueue, ResourceFlavors, LocalQueues)
+- Generates project namespaces with PersistentVolumeClaims
+- Generates user RBAC (RoleBindings) for job submission
+- Generates node labeling scripts
+- Outputs timestamped manifests for GitOps workflows
+
+**For Users (`coldpress`):**
+- Generates JobSet manifests from simple job specifications
+- Configures task dependencies (endpoint blocking, completion blocking)
+- Configures node affinity rules
+- Configures volume mounts and hardware discovery init containers
+- Creates helper scripts for job lifecycle management
+- Validates YAML schemas before generation
+
+**Prerequisites:**
+- Kueue and JobSet operators must be installed on the cluster
+- Users must exist in cluster authentication system
+
+## Getting Started
+
+### Installation
+
+Choose the installation method that fits your use case:
+
+| Use Case | Command | Activation Needed? | Best For |
+|----------|---------|-------------------|----------|
+| **Running jobs** | `./setup-env.sh --pipx` | ❌ No | End users, cluster users |
+| **Running jobs + dev** | `./setup-env.sh --pipx-editable` | ❌ No | Users who also contribute |
+| **Development** | `./setup-env.sh --uv` | ✅ Yes | Contributors, testing changes |
+
+#### Quick Start
+
+```bash
+# For end users (global install, no activation needed)
+./setup-env.sh --pipx
+coldpress --version
+
+# For developers (local venv, requires activation)
+./setup-env.sh --uv
+source .venv/bin/activate
+coldpress --version
+```
+
+#### For End Users (pipx)
+
+**pipx** installs Coldpress in an isolated environment with global CLI access - no activation needed.
+
+```bash
+# Install with pipx (recommended for end users)
+./setup-env.sh --pipx
+
+# Commands work globally, from any directory
+coldpress --help
+coldpress-setup --help
+```
+
+**Install in editable mode** (get updates as you pull from git):
+```bash
+./setup-env.sh --pipx-editable
+```
+
+**Manage installation:**
+```bash
+pipx upgrade coldpress    # Upgrade to latest version
+pipx reinstall coldpress  # Reinstall
+pipx uninstall coldpress  # Remove completely
+pipx list                 # Show installed packages
+```
+
+#### For Developers (uv)
+
+**uv** provides fast, reproducible virtual environments for development work.
+
+```bash
+# One-time setup (installs uv, creates venv, installs coldpress)
+./setup-env.sh --uv
+# or just:
+./setup-env.sh  # --uv is the default
+
+# Activate the environment
+source .venv/bin/activate
+
+# Use coldpress (while venv is active)
+coldpress --help
+
+# Or use without activation
+.venv/bin/coldpress --help
+```
+
+**For subsequent sessions:**
+```bash
+source .venv/bin/activate
+```
+
+**Why uv for development?**
+- Fast dependency resolution and installation
+- Reproducible builds
+- Editable install by default (changes reflect immediately)
+- Isolated from system Python
+
+### For Administrators
+
+If you are setting up Coldpress for the first time on a cluster, follow the **[Admin Quickstart Guide](docs/quickstart_admin.md)** to:
+
+1. Generate and apply cluster-wide configuration (ClusterQueue, ResourceFlavors)
+2. Generate and apply project configuration (namespaces, storage, queues)
+3. Generate and apply user RBAC (permissions for job submission)
+
+This is a one-time setup process that configures the cluster infrastructure for all users.
+
+### For Users
+
+Once the admin has completed the cluster setup, follow the **[User Quickstart Guide](docs/quickstart_user.md)** to:
+
+1. Generate job manifests from your workload specification
+2. Review and apply the JobSet to the cluster
+3. Monitor job progress and capture logs
+4. Explore results in persistent storage
+5. Clean up cluster resources (preserves results)
+
+This workflow is repeatable for each job you want to run.
+
+## Documentation
+
+- **[Resource Labels](docs/LABELS.md)** - Query and manage Coldpress resources using standard Kubernetes labels
+  - Find all Coldpress-managed resources: `kubectl get all -A -l app.kubernetes.io/managed-by=coldpress`
+  - Delete resources by job: `kubectl delete all -n namespace -l coldpress.io/job-id=job-name`
+- **[Error Handling](docs/ERROR_HANDLING.md)** - Exit codes, exception handling, and debugging
+  - Exit code 0: Success, 1: Application errors, 2: Usage errors
+  - Specific exception types with clear error messages
+  - Pydantic validation catches configuration errors early
+- **Security** - Input validation and injection prevention
+  - Kubernetes naming rules enforced (lowercase alphanumeric, dashes, dots)
+  - JSON constructed safely with `json.dumps()` (no f-string injection)
+  - No hardcoded temp files (timestamped outputs instead)
+
+## Quickstart Guides
+
+- **[Admin Quickstart](docs/quickstart_admin.md)** - Cluster setup for administrators (one-time)
+- **[User Quickstart](docs/quickstart_user.md)** - Running workloads for users (repeatable)
 
 
-## Contents
-- [Coldpress Usage Model](#coldpress-usage-model)
-- [Coldpress Execution Workflow](#coldpress-execution-workflow)
-- [Cluster Setup & Installation](#cluster-setup--installation)
-  - [1. Apply CRDs](#1-apply-crds)
-  - [2. Setup Kueue](#2-setup-kueue)
-  - [3. Deploy Coldpress Operator](#3-deploy-coldpress-operator)
-  - [4. Setup Admin Namespace](#4-setup-admin-namespace)
-  - [5. Setup User Namespace](#5-setup-user-namespace)
-- [Admin Guide: Creating Parsers (Templates)](#admin-guide-creating-parsers-templates)
-  - [WorkloadTemplates](#workloadtemplates)
-  - [DiscoveryTemplates](#discoverytemplates)
-- [User Guide: Submitting Jobs](#user-guide-submitting-jobs)
-  - [ColdpressResourceAllocator (Dynamic Scheduling)](#coldpressresourceallocator-dynamic-scheduling)
-  - [ComputeJ (Manual Node Targeting)](#computej-manual-node-targeting)
+## Repository Structure
 
-## Coldpress Usage Model
-Coldpress facilitates a dual-role usage model defined by Kubernetes namespaces and Role-Based Access Control (RBAC):
+```
+coldpress/
+├── coldpress/              # CLI: Job manifest generator
+├── coldpress_setup/        # CLI: Cluster setup and configuration
+├── coldpress_common/       # Shared validation models (Pydantic)
+├── tests/                  # Comprehensive test suite
+│   ├── test_validation.py  # Pydantic model validation tests
+│   ├── test_labels.py      # Resource labeling tests
+│   ├── test_security.py    # Security and input validation tests
+│   ├── test_error_handling.py  # Error handling tests
+│   ├── test_roce_disabled.py   # RoCE NIC disabled tests
+│   ├── test_exit_codes.sh  # Shell exit code tests
+│   └── run_all_tests.sh    # Run full test suite
+├── discovery/              # Hardware discovery pod templates
+├── projects/               # Example project configs (namespace, storage)
+├── examples/               # Example workloads (config.yaml + job-spec.yaml)
+├── cluster/                # Example cluster-wide configurations
+├── users/                  # Example user RBAC configurations
+├── docs/                   # Documentation
+├── pyproject.toml          # Package configuration (modern Python packaging)
+├── setup.py                # Package setup (legacy, for backward compatibility)
+└── setup-env.sh            # Environment setup script
+```
 
-* **Administrators (`coldpress-admin`)**: Operate with privileged access. They define `WorkloadTemplates` and `DiscoveryTemplates` (parsers) that dictate how jobs run, what dependencies are needed, and how hardware is accessed. They can also launch privileged `DiscoveryJ` jobs to discover and modify system configuration (PCIe, NUMA, RDMA states).
-* **Users (`researcher-a`, etc.)**: Operate in restricted namespaces. They submit `ColdpressResourceAllocator` or `ComputeJ` resources referencing admin-defined templates, supplying only the high-level workload configurations (e.g., batch sizes, model paths).
+## Testing
 
-## Coldpress Execution Workflow
+Coldpress includes a comprehensive test suite that validates all fixes for [GitHub issue #37](https://github.com/asanaullah/coldpress/issues/37).
 
-The lifecycle of a Coldpress job involves distinct steps crossing the Admin, User, and System boundaries:
+### Run All Tests
 
-**Setup & Authorization**
+```bash
+# From repository root
+./tests/run_all_tests.sh
+```
 
-1. **Define Templates:** The Administrator defines secure templates (Workload and Discovery).
-2. **Set Permissions:** The Administrator sets allowed parsers for the User Namespace via annotations.
+### Run Individual Tests
 
-**Submission & Processing**
+```bash
+python tests/test_validation.py    # Pydantic model validation
+python tests/test_labels.py        # Resource labels
+python tests/test_security.py      # Security & input validation
+python tests/test_error_handling.py # Error handling & exit codes
+python tests/test_roce_disabled.py  # RoCE NIC disabled
+bash tests/test_exit_codes.sh      # Shell exit codes
+```
 
-3. **Submit Job:** A Standard User submits a User Job (e.g., ComputeJ, CRA), or the Administrator submits an Admin Job for System Discovery.
-4. **Watch CRs:** The Coldpress Operator watches for these new Custom Resources.
-5. **Verify Authorization:** The Operator checks the namespace annotations to verify authorization.
-6. **Fetch Template:** The Operator fetches the required template.
+### CI/CD
 
-**Scheduling & Execution**
+Tests run automatically on every push and pull request via GitHub Actions. The workflow tests on Python 3.9, 3.10, 3.11, 3.12, 3.13, and 3.14.
 
-7. **Score Nodes:** If a ColdpressResourceAllocator (CRA) job is submitted, the Operator queries the Kueue ClusterQueue to evaluate node demand and scoring.
-8. **Create JobSet:** The Operator creates a suspended Kubernetes JobSet.
-9. **Request Quota:** The JobSet requests quota from Kueue.
-10. **Admit Job:** Kueue admits and unsuspends the JobSet.
-11. **Schedule Pods:** The JobSet schedules the Pods on the nodes to execute the tasks.
-
-**Storage & Cleanup**
-
-12. **Write Results:** Running Pods write User Results to the User PVC or Admin Results to the Admin PVC.
-13. **Trigger Monitor:** Pod completion triggers the Operator's Garbage Collection monitor.
-14. **Cleanup:** The Operator cleans up the Kubernetes resources (JobSets) and Custom Resources.
-
+See `tests/README.md` for detailed test documentation.
 
 ## Requirements
-Before starting, ensure your target nodes are labeled with Coldpress IDs (e.g., `oc label node <node-name> coldpress.node=0`). Also create the coldpress namespace where the operator will be deployed (`oc create namespace coldpress`).
 
-### 1. Install Kueue and JobSet
-Coldpress uses [Kueue](https://kueue.sigs.k8s.io/) and [Job Set](https://jobset.sigs.k8s.io/)  to manage job quotas and queueing. Assuming both operators are available to be installed on the cluster, the steps to install/configure them are given below.
+**Cluster:**
+- Kubernetes cluster (tested on OpenShift 4.21.5, Kubernetes v1.34.4)
+- Kueue operator (tested with v0.11.6, API v1beta1)
+- JobSet operator (tested with v1.0.0, API v1alpha2)
 
-1. Install the Red Hat build of Kueue* (tested with v1.2.0)
-2. Install the Job Set Operator (tested with v1.0.0)
-3. Create a Kueue configuration CR with Job Set integration enabled. 
+**Local development:**
+- Python 3.9+ (tested on Python 3.14)
+
+**Cluster tools:**
+- `kubectl` or `oc` CLI (tested with oc 4.17.0)
+
+## Environment Variables
+
+Customize directory locations with environment variables:
+
+**For `coldpress` (job generation):**
+- `COLDPRESS_DISCOVERY_DIR` - Discovery templates directory (default: `discovery`)
+- `COLDPRESS_PROJECT_DIR` - Project configs directory (default: `projects`)
+- `COLDPRESS_OUTPUT_DIR` - Default output directory (default: `output`)
+
+**For `coldpress-setup` (manifest generation):**
+- `COLDPRESS_MANIFESTS_DIR` - Manifest output directory (default: `manifests`)
+- `COLDPRESS_CLUSTER_DIR` - Cluster configs directory (default: `cluster`)
+- `COLDPRESS_USER_DIR` - User configs directory (default: `users`)
+
+**Example:**
 ```bash
-oc apply -f system/config/cluster/kueue-create.yaml
-```
-4.  Create a JobSetOperator CR 
-```bash
-oc apply -f system/config/cluster/jobset-create.yaml
-```
+export COLDPRESS_OUTPUT_DIR=jobs
+coldpress generate --config examples/pytorch_ddp_training/config.yaml
+# Outputs to: jobs/ddp-training-job/ instead of output/ddp-training-job/
 
-
-\* Kueue is an operator that can be manged by Red Hat OpenShift AI (RHOAI). If that is enabled on the cluster, then you do not need to install the Kueue operator again
-
-
-
-### 2. Apply CRDs
-
-Coldpress requires five Custom Resource Definitions (CRDs) to be applied to the cluster: `ComputeJ`, `DiscoveryJ`, `WorkloadTemplate`, `DiscoveryTemplate`, and `ColdpressResourceAllocator`.
-
-```bash
-oc apply -f system/config/cluster/crds.yaml
-```
-
-
-### 3. Setup Kueue
-The next step is to define `ResourceFlavors` (which map to coldpress node labels) and a `ClusterQueue`.  
-
-```bash
-oc apply -f system/config/cluster/kueue-init.yaml
-```
-
-* **What this does**: It creates `node0` and `node1` flavors, setting nominal quotas for CPUs, Memory, GPUs, and RoCE NICs. It also creates a global `cluster-queue-test` to manage incoming Coldpress jobs.
-
-
-### 4. Deploy Coldpress Operator
-
-Deploy the Kopf-based Python operator that watches for Coldpress CRDs and translates them into `JobSets`. 
-
-```bash
-oc apply -f system/config/cluster/deployment.yaml
+export COLDPRESS_MANIFESTS_DIR=gitops/manifests
+coldpress-setup generate project coldpress-project.yaml
+# Outputs to: gitops/manifests/project-coldpress-project-*.yaml
 ```
 
-* **What this does**: Creates a ServiceAccount, ClusterRole bindings with permissions to manage Pods, JobSets, and Kueue resources, and spins up the Operator deployment.
+## Example: PyTorch DDP Training
 
-### 5. Setup Admin Namespace
+**Job spec** (examples/pytorch_ddp_training/job-spec.yaml):
 
-The Admin namespace holds privileged access and stores the globally available templates.
-
-```bash
-oc apply -f system/config/admin/admin-setup.yaml
-```
-
-* **What this does**:
-* Creates the `coldpress-admin` namespace.
-* Applies Pod Security Admission labels to allow `privileged` pods.
-* Creates a `LocalQueue` to connect to Kueue.
-* Sets up persistent storage (`coldpress-admin-storage`) for system discovery results.
-
-### 6. Setup User Namespace
-
-Setup a restricted namespace for researchers/users to submit workloads.
-
-```bash
-oc apply -f system/config/user/user-setup.yaml
-```
-
-* **What this does**:
-* Creates the `researcher-a` namespace.
-* Uses annotations (`coldpress.io/allowed-allocator-parsers` and `coldpress.io/allowed-compute-parsers`) to securely restrict *which* templates this user is allowed to execute.
-* Provisions standard (non-privileged) storage PVCs and NetworkAttachmentDefinitions (for SR-IOV/RDMA).
-
-
-
-## Admin Guide: Creating Parsers (Templates)
-
-Admins codify the execution environment for AI tasks using templates. These templates live in the `coldpress-admin` namespace.
-
-### WorkloadTemplates
-
-`WorkloadTemplates` define a specific application (e.g., vLLM, GuideLLM, GROMACS).
-
-To upload a parser:
-
-```bash
-oc apply -f parsers/workload/vllm-parser.yaml
-```
-
-**Key Sections of a WorkloadTemplate**:
-
-* `requirements`: Hints for the Allocator regarding how many GPUs or RoCE NICs this template requires per node (e.g., `gpus_per_node: "{num_gpus}"`).
-* `user_params`: A list of variable names the user *must* provide in their job YAML (e.g., `model`, `port`).
-* `allocator_params`: Variables that the Coldpress operator injects automatically during scheduling.
-* `image` & `args`: The container image and command to run. Variables in `{}` brackets are string-interpolated at runtime based on `user_params`.
-* `blocking`: Defines task dependencies in multi-task workflows:
-  * `type: completion`: The next task waits for this task to exit successfully (e.g., a training script).
-  * `type: endpoint`: The next task waits until an HTTP endpoint is reachable (e.g., wait for vLLM `http://127.0.0.1:{port}/health` before starting the benchmark).
-  * `type: delay`: Blindly waits N seconds.
-
-* `ephemeral_mounts`: Specifies the job directory (e.g., `/tmp/result`) to be mounted in order to extract results to the user's permanent PVC upon job completion.
-
-### DiscoveryTemplates
-
-Used for running infrastructure-level discovery (e.g., PCIe topology, system power states). These are executed via a `DiscoveryJ`.
-
-* `script`: The raw bash/python script to run.
-* `result_dir`: The directory in the admin PVC where the output will be aggregated.
-
-## User Guide: Submitting Jobs
-
-Users define the sequence of tasks they want to run. There are two primary ways to submit workloads.
-
-### ColdpressResourceAllocator (Dynamic Scheduling)
-
-The `ColdpressResourceAllocator` (CRA) is the recommended way to submit jobs. The user specifies *what* they want to run and its parameters, and the Operator's Kueue integration automatically calculates the node with the lowest load and highest availability to schedule the tasks.
-
-**Example: vLLM + GuideLLM Benchmark**
+Note: This generates a JobSet named `coldpress-ddp-training` in the cluster.
 
 ```yaml
-kind: ColdpressResourceAllocator
-metadata:
-  name: vllm-guidellm
-  namespace: researcher-a
-spec:
-  storage:
-    results: researcher-a-storage
-  tasks:
-    - name: "inference-server"
-      template: "vllm-parser"
-      params:
-        num_gpus: 1
-        model: "ibm-granite/granite-3.3-8b-instruct"
-        max_model_len: 10000
-        port: 8000
-        gpu_memory_utilization: 0.6
-    - name: "benchmark-run"
-      template: "guidellm-parser"
-      params:
-        target_task: 0
-        port: 8000
-        max_seconds: 30
-        rate_type: "throughput"
-        rate: 1
-        data: "prompt_tokens=256,output_tokens=128"
+name: ddp-training
+tolerate_all: true
+
+containers:
+  - name: training
+    image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+    workingDir: /workspace
+    command: ["python", "-m", "torch.distributed.run"]
+    args:
+      - --nproc_per_node=2
+      - --nnodes=1
+      - train.py
+      - --dataset=mnist
+      - --train-test-split=0.8
+      - --epochs=50
+      - --batch-size=128
+      - --hidden-size=4096
+      - --lr=0.01
+      - --output-dir=/results/checkpoints
+    resources:
+      requests:
+        nvidia.com/gpu: "2"
+        memory: "16Gi"
+        cpu: "8"
+      limits:
+        nvidia.com/gpu: "2"
+        memory: "16Gi"
+    env:
+      - name: NCCL_DEBUG
+        value: "INFO"
+
+volumes:
+  - name: results
+    mount: /results
+  - name: dshm
+    type: emptyDir
+    medium: Memory
+    sizeLimit: 16Gi
+    mount: /dev/shm
 ```
 
-**How it works**:
-
-1. The user submits this file (`oc apply -f config.yaml`).
-2. The Operator reads the templates, verifies permissions, sees Task 0 needs 1 GPU, checks Kueue for the best node, and allocates the job.
-3. It spawns a native Kubernetes `JobSet`, managing the `vllm-parser` pod first, and starting the `guidellm-parser` pod only after vLLM's health endpoint goes green.
-
-### ComputeJ (Manual Node Targeting)
-
-If a user explicitly needs to target exact hardware (e.g., benchmarking an RDMA connection between specifically Node 0 and Node 1), they use `ComputeJ`.
-
-**Example: RDMA Perf Test**
-
+**Config** (examples/pytorch_ddp_training/config.yaml):
 ```yaml
-apiVersion: coldpress.io/v1
-kind: ComputeJ
-metadata:
-  name: roce-test
-  namespace: researcher-a
-spec:
-  storage:
-    results: researcher-a-storage
-  tasks:
-    - name: "perf-server"
-      template: "perftest-server"
-      node: 0
-      params:
-        gid_index: 3 
-        port: 18515
-        sriov_resource_name: "openshift.io/eno5np0rdma" 
-        network_name: "sriov-rdma-net-eno5"
-        flags: "-m 4096 -q 1 -s 1048576"
-        
-    - name: "perf-client"
-      template: "perftest-client"
-      node: 1
-      params:
-        gid_index: 3
-        port: 18515
-        sriov_resource_name: "openshift.io/eno5np0rdma"
-        network_name: "sriov-rdma-net-eno5"
-        flags: "-m 4096 -q 1 -s 1048576"
+project: coldpress-project
+
+# Discovery - runs as init container per task to capture actual node hardware
+discovery: user_snapshot  # Simple format
+# Or use detailed format:
+# discovery:
+#   template: user_snapshot
+#   tasks: all  # or [0, 1] for specific tasks
+
+output: ddp-training-job
+
+# Files to mount into container (creates ConfigMap)
+files:
+  - train.py
+  - model_config.json
 ```
 
-Once submitted, you can monitor execution natively using Kubernetes tools:
+**Generate and run:**
+```bash
+coldpress generate --config examples/pytorch_ddp_training/config.yaml
+cd output/ddp-training-job/
+./run.sh
+```
+
+**Results structure in PVC:**
+```
+/data/coldpress-project/coldpress_results/ddp-training-{uid}-{timestamp}/
+├── task-0/
+│   ├── discovery_user_snapshot.json    # Hardware/benchmark data for task 0
+│   ├── checkpoints/
+│   │   ├── model_weights.pth          # Trained model
+│   │   └── training_stats.json        # Training metrics
+└── logs/
+    ├── {pod-name}.log                  # Individual pod logs
+    └── combined.log                    # Combined logs
+```
+
+## Example: vLLM + GuideLLM Benchmark
+
+Multi-task workflow with endpoint blocking:
 
 ```bash
-oc get compute-jobs -n researcher-a
-oc get jobsets -n researcher-a
-oc get pods -n researcher-a
-
+coldpress generate --config examples/vllm_guidellm_benchmark/config.yaml
+cd output/vllm-benchmark-job/
+./run.sh
 ```
 
-Results and benchmark files will automatically be deposited into the `researcher-a-storage` PVC inside a timestamped directory (e.g., `data/coldpress_results/roce-test_20240101_120000/`) upon completion.
+The job-spec defines:
+- **Task 1**: vLLM inference server with readinessProbe (endpoint blocking)
+- **Task 2**: GuideLLM benchmark client that waits for server readiness
+
+See [examples/README.md](examples/README.md) for more details.
+
+## License
+
+See LICENSE file.
