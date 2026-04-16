@@ -19,8 +19,8 @@ def test_exit_codes():
 
     tests = [
         {
-            "name": "Success: Valid coldpress config",
-            "cmd": "python -m coldpress.cli generate --config examples/pytorch_ddp_training/config.yaml",
+            "name": "Success: Valid coldpress intent",
+            "cmd": "python -m coldpress.cli generate --intent examples/pytorch_ddp_training/intent_jobset.yaml",
             "expected": 0,
         },
         {
@@ -68,13 +68,7 @@ def test_specific_exceptions():
     print("=" * 60)
 
     # Check that code uses specific exceptions
-    import coldpress.generator as gen
-
-    # Test create_service with invalid URL
-    task = {"health_check": None}
-    result = gen.create_service(task, 0, "test", "coldpress-test", "default")
-    assert result is None, "create_service should return None for missing health_check"
-    print("✅ create_service handles missing health_check")
+    import coldpress.jobset_generator as gen
 
     # Test build_discovery_init_container with missing template
     result = gen.build_discovery_init_container(
@@ -85,12 +79,14 @@ def test_specific_exceptions():
     )
     print("✅ build_discovery_init_container handles missing template")
 
-    # Test build_discovery_job with missing template
-    result = gen.build_discovery_job(
-        "/tmp/non-existent-template.yaml", "base", "pvc", "0"
-    )
-    assert result is None, "build_discovery_job should return None for missing template"
-    print("✅ build_discovery_job handles missing template")
+    # Test substitute_macros with dangerous characters
+    try:
+        macros = {"TEST": "value; rm -rf /"}
+        gen.substitute_macros("${TEST}", macros)
+        raise AssertionError("Should have caught dangerous characters in macro value")
+    except ValueError as e:
+        print("✅ substitute_macros rejects dangerous characters")
+        assert "Invalid character" in str(e)
 
 
 def test_validation_errors():

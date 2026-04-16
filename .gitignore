@@ -52,6 +52,13 @@ dmypy.json
 # pyright
 .pyright/
 
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
 # Jupyter Notebook
 .ipynb_checkpoints
 
@@ -70,3 +77,8 @@ manifests/
 
 # User-specific files
 users/test.yaml
+
+# Documentation
+docs/
+README.md
+CHANGELOG.md

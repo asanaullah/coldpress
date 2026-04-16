@@ -3,6 +3,7 @@
 
 from .model import (
     validate_config,
+    validate_intent,
     validate_project_config,
     validate_task_specs,
     validate_job_spec,
@@ -10,6 +11,9 @@ from .model import (
     validate_cluster_config,
     validate_kubernetes_name,
     WorkloadConfig,
+    IntentConfig,
+    TaskIntent,
+    DependsOnConfig,
     ProjectConfig,
     TaskSpec,
     JobSpec,
@@ -19,6 +23,7 @@ from .model import (
 
 __all__ = [
     "validate_config",
+    "validate_intent",
     "validate_project_config",
     "validate_task_specs",
     "validate_job_spec",
@@ -26,6 +31,9 @@ __all__ = [
     "validate_cluster_config",
     "validate_kubernetes_name",
     "WorkloadConfig",
+    "IntentConfig",
+    "TaskIntent",
+    "DependsOnConfig",
     "ProjectConfig",
     "TaskSpec",
     "JobSpec",

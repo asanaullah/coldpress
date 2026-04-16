@@ -1,0 +1,14 @@
+project: coldpress-project
+output: vllm-kserve-inference
+target: kserve
+
+discovery:
+  template: user_snapshot
+  tasks: all
+
+tasks:
+  - name: inference-server
+    replicas: 1
+    env:
+      # KServe-specific settings could go here
+      # Environment variables from job-spec.yaml will be preserved

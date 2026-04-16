@@ -7,10 +7,10 @@
 # Node IDs are assigned based on position in list (0, 1, 2, ...)
 nodes:
   - hostname: wrk-4  # Will be labeled coldpress.node=0
-    gpus: 4
+    gpus: 2
     roce_nics: 4
   - hostname: wrk-6  # Will be labeled coldpress.node=1
-    gpus: 4
+    gpus: 2
     roce_nics: 4
 
 # ClusterQueue name
@@ -76,7 +76,7 @@ spec:
       - name: memory
         nominalQuota: 1024Gi
       - name: nvidia.com/gpu
-        nominalQuota: 4
+        nominalQuota: 2
       - name: openshift.io/eno5np0rdma
         nominalQuota: 1
       - name: openshift.io/eno6np0rdma
@@ -92,7 +92,7 @@ spec:
       - name: memory
         nominalQuota: 1024Gi
       - name: nvidia.com/gpu
-        nominalQuota: 4
+        nominalQuota: 2
       - name: openshift.io/eno5np0rdma
         nominalQuota: 1
       - name: openshift.io/eno6np0rdma

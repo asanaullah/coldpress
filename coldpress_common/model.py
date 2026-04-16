@@ -242,8 +242,105 @@ class DiscoveryConfig(BaseModel):
         return v
 
 
+class DependsOnConfig(BaseModel):
+    """Task dependency configuration."""
+
+    task: str
+    wait_for: Literal["ready", "completion"]
+
+
+class TaskIntent(BaseModel):
+    """Task intent specification from intent.yaml."""
+
+    name: str
+    replicas: Optional[int] = 1
+    nodes: Optional[list[int]] = None
+    args: Optional[dict[str, str]] = None  # Key-value pairs for arg replacement
+    env: Optional[dict[str, str]] = None  # Key-value pairs for env var replacement
+    depends_on: Optional[DependsOnConfig] = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_task_name(cls, v):
+        """Validate task name is a valid Kubernetes resource name."""
+        return validate_kubernetes_name(v, max_length=63)
+
+    @model_validator(mode="after")
+    def validate_nodes_match_replicas(self):
+        """Validate nodes list matches replicas count if specified."""
+        if self.nodes is not None and len(self.nodes) != self.replicas:
+            raise ValueError(
+                f"Task '{self.name}': nodes list length ({len(self.nodes)}) "
+                f"must match replicas ({self.replicas})"
+            )
+        return self
+
+
+class IntentConfig(BaseModel):
+    """Intent.yaml schema - new format for vk8s transformation."""
+
+    project: str
+    output: str
+    target: Literal["jobset", "kubeflow", "kserve"] = "jobset"  # Backend to generate
+    files: Optional[list[str]] = None
+    discovery: Optional[Union[str, DiscoveryConfig]] = None
+    tasks: list[TaskIntent]
+
+    @field_validator("discovery", mode="before")
+    @classmethod
+    def parse_discovery(cls, v):
+        """Parse discovery field - accept string or dict."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return {"template": v, "tasks": "all"}
+        return v
+
+    @field_validator("tasks")
+    @classmethod
+    def validate_tasks_not_empty(cls, v):
+        """Ensure tasks list is not empty."""
+        if not v:
+            raise ValueError("intent.yaml must include at least one task")
+        return v
+
+    @model_validator(mode="after")
+    def validate_task_dependencies(self):
+        """Validate task dependency references exist."""
+        task_names = {task.name for task in self.tasks}
+        for task in self.tasks:
+            if task.depends_on and task.depends_on.task not in task_names:
+                raise ValueError(
+                    f"Task '{task.name}' depends on '{task.depends_on.task}' "
+                    f"which does not exist"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_no_circular_dependencies(self):
+        """Validate no circular dependencies exist."""
+        # Build dependency graph
+        deps = {
+            task.name: task.depends_on.task if task.depends_on else None
+            for task in self.tasks
+        }
+
+        # Check each task for cycles
+        for task_name in deps:
+            visited = set()
+            current = task_name
+            while current is not None:
+                if current in visited:
+                    raise ValueError(
+                        f"Circular dependency detected involving task '{task_name}'"
+                    )
+                visited.add(current)
+                current = deps.get(current)
+        return self
+
+
 class WorkloadConfig(BaseModel):
-    """Main config.yaml schema."""
+    """Main config.yaml schema (legacy format - for backward compatibility)."""
 
     project: Optional[str] = None
     discovery: Optional[Union[str, DiscoveryConfig]] = None
@@ -264,7 +361,7 @@ class WorkloadConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_has_project(self):
-        """Ensure project is specified (can be overridden via CLI)."""
+        """Ensure project is specified (can be overridden via CLI --project flag)."""
         # Note: project can be None if provided via CLI --project flag
         return self
 
@@ -281,6 +378,7 @@ class ProjectConfig(BaseModel):
     """Project configuration from projects/*.yaml."""
 
     namespace: str
+    targets: Optional[str] = "jobset"  # jobset, kubeflow, or comma-separated
     cluster_queue: Optional[str] = None
     storage_class: Optional[str] = None
     storage: Optional[StorageConfig] = None
@@ -479,3 +577,19 @@ def validate_cluster_config(cluster_data: dict) -> ClusterConfig:
         ValidationError: If validation fails
     """
     return ClusterConfig.model_validate(cluster_data)
+
+
+def validate_intent(intent_data: dict) -> IntentConfig:
+    """
+    Validate intent.yaml data.
+
+    Args:
+        intent_data: Raw YAML data from intent file
+
+    Returns:
+        Validated IntentConfig
+
+    Raises:
+        ValidationError: If validation fails
+    """
+    return IntentConfig.model_validate(intent_data)

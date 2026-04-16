@@ -121,7 +121,14 @@ def cluster(config_file, output_dir):
     default=None,
     help=f"Output directory for manifests (default: {MANIFESTS_DIR})",
 )
-def project(config_file, output_dir):
+@click.option(
+    "--targets",
+    "-t",
+    type=str,
+    default=None,
+    help="Override target platforms from config (jobset, kubeflow, or comma-separated)",
+)
+def project(config_file, output_dir, targets):
     """
     Generate project configuration manifests.
 
@@ -151,7 +158,7 @@ def project(config_file, output_dir):
         click.echo(f"Error: Project config validation failed:\n{e}", err=True)
         raise SystemExit(1)
 
-    raise SystemExit(generate_project_config(config, config_file, output_dir))
+    raise SystemExit(generate_project_config(config, config_file, output_dir, targets))
 
 
 @generate.command()
@@ -309,7 +316,7 @@ def _generate_and_display_manifests(config, manifest_generator):
     return manifests
 
 
-def generate_project_config(config, config_file, output_dir):
+def generate_project_config(config, config_file, output_dir, targets_override=None):
     """Generate project configuration manifests."""
     from .generator import generate_project_manifests
 
@@ -317,6 +324,16 @@ def generate_project_config(config, config_file, output_dir):
     if not namespace:
         click.echo("Error: Project config must include 'namespace'", err=True)
         return 1
+
+    # Override targets if specified
+    if targets_override:
+        config["targets"] = targets_override
+        click.echo(f"Using targets from CLI: {targets_override}")
+    elif "targets" in config:
+        click.echo(f"Using targets from config: {config['targets']}")
+    else:
+        config["targets"] = "jobset"  # default
+        click.echo("Using default targets: jobset")
 
     click.echo("Generating project configuration manifests...")
     click.echo(f"Namespace: {namespace}")

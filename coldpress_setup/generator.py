@@ -143,8 +143,13 @@ def generate_pvc(name, namespace, storage_size, storage_class):
     return pvc
 
 
-def generate_rbac(namespace):
-    """Generate RBAC manifests for namespace (ServiceAccount, Role, RoleBinding)."""
+def generate_rbac(namespace, targets="jobset"):
+    """Generate RBAC manifests for namespace (ServiceAccount, Role, RoleBinding).
+
+    Args:
+        namespace: Kubernetes namespace name
+        targets: Comma-separated list of target platforms (jobset, kubeflow)
+    """
     rbac = []
 
     # ServiceAccount
@@ -159,21 +164,45 @@ def generate_rbac(namespace):
     }
     rbac.append(sa)
 
-    # Role - allow managing JobSets and viewing related resources
-    role = {
-        "apiVersion": "rbac.authorization.k8s.io/v1",
-        "kind": "Role",
-        "metadata": {
-            "name": "coldpress-user-role",
-            "namespace": namespace,
-            "labels": COLDPRESS_LABELS.copy(),
-        },
-        "rules": [
+    # Parse targets
+    target_list = [t.strip() for t in targets.split(",")]
+    enable_jobset = "jobset" in target_list
+    enable_kubeflow = "kubeflow" in target_list
+
+    # Build RBAC rules based on enabled targets
+    rules = []
+
+    # JobSet permissions
+    if enable_jobset:
+        rules.append(
             {
                 "apiGroups": ["jobset.x-k8s.io"],
                 "resources": ["jobsets"],
                 "verbs": ["create", "get", "list", "watch", "delete"],
-            },
+            }
+        )
+
+    # Kubeflow Training Operator permissions
+    if enable_kubeflow:
+        rules.append(
+            {
+                "apiGroups": ["kubeflow.org"],
+                "resources": ["pytorchjobs", "tfjobs", "mpijobs", "xgboostjobs"],
+                "verbs": ["create", "get", "list", "watch", "delete"],
+            }
+        )
+        # KServe permissions
+        rules.append(
+            {
+                "apiGroups": ["serving.kserve.io"],
+                "resources": ["inferenceservices"],
+                "verbs": ["create", "get", "list", "watch", "delete"],
+            }
+        )
+
+    # Common permissions (always needed)
+    rules.extend(
+        [
             {
                 "apiGroups": ["batch"],
                 "resources": ["jobs"],
@@ -193,9 +222,29 @@ def generate_rbac(namespace):
             {
                 "apiGroups": [""],
                 "resources": ["configmaps"],
-                "verbs": ["create", "get", "list", "watch", "delete"],
+                "verbs": [
+                    "create",
+                    "get",
+                    "list",
+                    "watch",
+                    "update",
+                    "patch",
+                    "delete",
+                ],
             },
-        ],
+        ]
+    )
+
+    # Role - allow managing resources based on enabled targets
+    role = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "Role",
+        "metadata": {
+            "name": "coldpress-user-role",
+            "namespace": namespace,
+            "labels": COLDPRESS_LABELS.copy(),
+        },
+        "rules": rules,
     }
     rbac.append(role)
 
@@ -368,7 +417,8 @@ def generate_project_manifests(config):
         generate_namespace(namespace, storage_size, privileged)
     )
 
-    # LocalQueue
+    # LocalQueue (needed for both jobset and kubeflow targets)
+    # Both JobSet and Kubeflow Training Operator jobs use Kueue for resource management
     manifests["kueue"].append(generate_local_queue(namespace, cluster_queue_name))
 
     # Storage PVC (for results)
@@ -379,7 +429,8 @@ def generate_project_manifests(config):
         )
 
     # RBAC (ServiceAccount, Role, RoleBinding)
-    manifests["rbac"].extend(generate_rbac(namespace))
+    targets = config.get("targets", "jobset")
+    manifests["rbac"].extend(generate_rbac(namespace, targets))
 
     return manifests
 

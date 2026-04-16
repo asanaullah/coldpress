@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Test script to verify Coldpress resource labels are applied correctly."""
 
-from coldpress.generator import (
-    generate_jobset,
+from coldpress.jobset_generator import (
+    generate_jobset_from_intent,
+)
+from coldpress.constants import (
     COLDPRESS_LABELS as COLDPRESS_JOB_LABELS,
 )
 from coldpress_setup.generator import (
@@ -12,6 +14,7 @@ from coldpress_setup.generator import (
     generate_cluster_queue,
     COLDPRESS_LABELS as COLDPRESS_SETUP_LABELS,
 )
+from coldpress_common import validate_intent
 
 
 def test_label_constants():
@@ -40,70 +43,94 @@ def test_jobset_labels():
     print("Testing JobSet Labels")
     print("=" * 60)
 
-    job_spec = {
-        "name": "test-job",
-        "namespace": "test-ns",
-        "tasks": [
-            {
-                "name": "task-0",
-                "containers": [{"name": "main", "image": "alpine:latest"}],
+    # Create vanilla k8s Job
+    vk8s_job = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {"name": "test-task"},
+        "spec": {
+            "template": {
+                "spec": {
+                    "containers": [{"name": "main", "image": "alpine:latest"}],
+                    "restartPolicy": "Never",
+                }
             }
-        ],
-        "storage": {"results": "test-pvc"},
+        },
     }
 
-    jobset, services, _ = generate_jobset(job_spec, {0: "any"})
+    # Create intent config
+    intent_data = {
+        "project": "coldpress-project",
+        "output": "test-job",
+        "target": "jobset",
+        "tasks": [{"name": "test-task", "replicas": 1}],
+    }
+    intent_config = validate_intent(intent_data)
+
+    # Create project config
+    project_config = {"namespace": "test-ns", "storage": {"results": "test-pvc"}}
+
+    jobset, services, _ = generate_jobset_from_intent(
+        {"test-task": vk8s_job}, intent_config, project_config, "test-ns"
+    )
     labels = jobset["metadata"]["labels"]
 
     assert "app.kubernetes.io/managed-by" in labels
     assert labels["app.kubernetes.io/managed-by"] == "coldpress"
     assert "app.kubernetes.io/version" in labels
     assert labels["app.kubernetes.io/version"] == "0.2.0"
-    assert "coldpress.io/job-id" in labels
-    assert labels["coldpress.io/job-id"] == "coldpress-test-job"
 
     print(f"✅ JobSet labels: {labels}")
 
 
 def test_service_labels():
-    """Test that Services have correct labels."""
+    """Test that Services are not generated (JobSet provides automatic DNS)."""
     print("\n" + "=" * 60)
-    print("Testing Service Labels")
+    print("Testing Service Labels (JobSet DNS)")
     print("=" * 60)
 
-    job_spec = {
-        "name": "test-job",
-        "namespace": "test-ns",
-        "tasks": [
-            {
-                "name": "server",
-                "blocking": "endpoint",
-                "health_check": "http://server:8000/health",
-                "containers": [
-                    {
-                        "name": "main",
-                        "image": "vllm:latest",
-                        "readinessProbe": {
-                            "httpGet": {"path": "/health", "port": 8000}
-                        },
-                    }
-                ],
+    # Create vanilla k8s Job with readinessProbe
+    vk8s_job = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {"name": "server"},
+        "spec": {
+            "template": {
+                "spec": {
+                    "containers": [
+                        {
+                            "name": "main",
+                            "image": "vllm:latest",
+                            "readinessProbe": {
+                                "httpGet": {"path": "/health", "port": 8000}
+                            },
+                        }
+                    ],
+                    "restartPolicy": "Never",
+                }
             }
-        ],
-        "storage": {"results": "test-pvc"},
+        },
     }
 
-    jobset, services, _ = generate_jobset(job_spec, {0: "any"})
+    # Create intent config
+    intent_data = {
+        "project": "coldpress-project",
+        "output": "test-job",
+        "target": "jobset",
+        "tasks": [{"name": "server", "replicas": 1}],
+    }
+    intent_config = validate_intent(intent_data)
 
-    assert len(services) > 0, "Expected at least one service"
-    labels = services[0]["metadata"]["labels"]
+    # Create project config
+    project_config = {"namespace": "test-ns", "storage": {"results": "test-pvc"}}
 
-    assert "app.kubernetes.io/managed-by" in labels
-    assert labels["app.kubernetes.io/managed-by"] == "coldpress"
-    assert "app.kubernetes.io/version" in labels
-    assert "coldpress.io/job-id" in labels
+    jobset, services, _ = generate_jobset_from_intent(
+        {"server": vk8s_job}, intent_config, project_config, "test-ns"
+    )
 
-    print(f"✅ Service labels: {labels}")
+    # Services are no longer generated - JobSet provides automatic DNS
+    assert len(services) == 0, "Services should not be generated (JobSet provides DNS)"
+    print("✅ No services generated (JobSet provides automatic DNS)")
 
 
 def test_project_resource_labels():

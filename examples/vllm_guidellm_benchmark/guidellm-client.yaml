@@ -1,0 +1,52 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guidellm-benchmark
+  namespace: coldpress-project
+spec:
+  template:
+    metadata:
+      labels:
+        app: guidellm-client
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: client
+          image: ghcr.io/vllm-project/guidellm:nightly
+          command: ["bash", "-c"]
+          args:
+            - |
+              guidellm benchmark run \
+                --target "${GUIDELLM_TARGET}" \
+                --output-dir "${GUIDELLM_OUTPUT_DIR}" \
+                --outputs "${GUIDELLM_OUTPUTS}" \
+                --max-seconds ${GUIDELLM_MAX_SECONDS} \
+                --rate-type ${GUIDELLM_RATE_TYPE} \
+                --rate ${GUIDELLM_RATE} \
+                --data "${GUIDELLM_DATA}"
+          env:
+            - name: HOME
+              value: /tmp
+            - name: GUIDELLM_TARGET
+              value: "http://vllm-server:8000"
+            - name: GUIDELLM_OUTPUT_DIR
+              value: "/results"
+            - name: GUIDELLM_OUTPUTS
+              value: "json"
+            - name: GUIDELLM_MAX_SECONDS
+              value: "30"
+            - name: GUIDELLM_RATE_TYPE
+              value: "throughput"
+            - name: GUIDELLM_RATE
+              value: "1"
+            - name: GUIDELLM_DATA
+              value: "prompt_tokens=256,output_tokens=128"
+          volumeMounts:
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: coldpress-project-storage

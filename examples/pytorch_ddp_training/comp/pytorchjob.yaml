@@ -1,0 +1,131 @@
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: coldpress-ddp-training
+  namespace: coldpress-project
+  labels:
+    app.kubernetes.io/managed-by: coldpress
+    app.kubernetes.io/version: 0.2.0
+    coldpress.io/job-id: coldpress-ddp-training
+    kueue.x-k8s.io/queue-name: coldpress-local-queue-coldpress-project
+  annotations:
+    coldpress.io/base-dir: coldpress-project/coldpress_results/ddp-training-050895d3-20260416_000443
+    coldpress.io/storage-pvc: coldpress-project-storage
+    kueue.x-k8s.io/wait-for-pods-ready-timeout: 20m
+spec:
+  suspend: true
+  pytorchReplicaSpecs:
+    Master:
+      replicas: 1
+      restartPolicy: OnFailure
+      template: &id001
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: 'false'
+          labels:
+            app.kubernetes.io/managed-by: coldpress
+            app.kubernetes.io/version: 0.2.0
+            coldpress.io/job-id: coldpress-ddp-training
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: pytorch
+            image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+            workingDir: /workspace
+            command:
+            - bash
+            - -c
+            args:
+            - '# Build torch.distributed.run command from env vars
+
+              CMD="python -m torch.distributed.run"
+
+
+              # Add distributed params if env vars are set
+
+              [ -n "$NPROC_PER_NODE" ] && CMD="$CMD --nproc_per_node=$NPROC_PER_NODE"
+
+              [ -n "$NNODES" ] && CMD="$CMD --nnodes=$NNODES"
+
+              [ -n "$RANK" ] && CMD="$CMD --node_rank=$RANK"
+
+              [ -n "$MASTER_ADDR" ] && CMD="$CMD --master_addr=$MASTER_ADDR"
+
+              [ -n "$MASTER_PORT" ] && CMD="$CMD --master_port=$MASTER_PORT"
+
+
+              # Training script and args
+
+              CMD="$CMD train.py"
+
+              CMD="$CMD --dataset=mnist"
+
+              CMD="$CMD --train-test-split=0.8"
+
+              CMD="$CMD --epochs=50"
+
+              CMD="$CMD --batch-size=128"
+
+              CMD="$CMD --hidden-size=4096"
+
+              CMD="$CMD --lr=0.01"
+
+              CMD="$CMD --output-dir=/results/checkpoints"
+
+
+              echo "Running: $CMD"
+
+              exec $CMD
+
+              '
+            - --nnodes=2
+            resources:
+              requests:
+                nvidia.com/gpu: '2'
+                memory: 16Gi
+                cpu: '8'
+              limits:
+                nvidia.com/gpu: '2'
+                memory: 16Gi
+            env:
+            - name: NCCL_DEBUG
+              value: INFO
+            - name: NPROC_PER_NODE
+              value: '2'
+            volumeMounts:
+            - name: results
+              mountPath: /results
+            - name: dshm
+              mountPath: /dev/shm
+            - name: training-script
+              mountPath: /workspace/train.py
+              subPath: train.py
+          tolerations:
+          - operator: Exists
+          volumes:
+          - name: results
+            persistentVolumeClaim:
+              claimName: coldpress-project-storage
+          - name: dshm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 16Gi
+          - name: training-script
+            configMap:
+              name: coldpress-ddp-training-files
+          initContainers:
+          - name: mkdir
+            image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+            command:
+            - sh
+            - -c
+            args:
+            - mkdir -p /results/coldpress-project/coldpress_results/ddp-training-050895d3-20260416_000443
+              && echo Created directory /results/coldpress-project/coldpress_results/ddp-training-050895d3-20260416_000443
+            volumeMounts:
+            - name: results
+              mountPath: /results
+    Worker:
+      replicas: 1
+      restartPolicy: OnFailure
+      template: *id001

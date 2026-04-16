@@ -1,0 +1,21 @@
+project: coldpress-project
+output: ddp-training-job
+target: jobset
+
+files:
+  - train.py
+
+discovery:
+  template: user_snapshot
+  tasks: all
+
+tasks:
+  - name: ddp-training
+    replicas: 2
+    env:
+      # Don't override NPROC_PER_NODE - use value from job-spec (2 GPUs per node)
+      NNODES: "${REPLICAS}"
+      MASTER_ADDR: "${REPLICA_ddp-training_0}"
+      MASTER_PORT: "29500"
+      RANK: "${INDEX}"
+      WORLD_SIZE: "${REPLICAS}"
