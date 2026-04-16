@@ -240,34 +240,6 @@ coldpress/
 └── setup-env.sh            # Environment setup script
 ```
 
-## Testing
-
-Coldpress includes a comprehensive test suite that validates all fixes for [GitHub issue #37](https://github.com/asanaullah/coldpress/issues/37).
-
-### Run All Tests
-
-```bash
-# From repository root
-./tests/run_all_tests.sh
-```
-
-### Run Individual Tests
-
-```bash
-python tests/test_validation.py    # Pydantic model validation
-python tests/test_labels.py        # Resource labels
-python tests/test_security.py      # Security & input validation
-python tests/test_error_handling.py # Error handling & exit codes
-python tests/test_roce_disabled.py  # RoCE NIC disabled
-bash tests/test_exit_codes.sh      # Shell exit codes
-```
-
-### CI/CD
-
-Tests run automatically on every push and pull request via GitHub Actions. The workflow tests on Python 3.9, 3.10, 3.11, 3.12, 3.13, and 3.14.
-
-See `tests/README.md` for detailed test documentation.
-
 ## Requirements
 
 **Cluster:**
