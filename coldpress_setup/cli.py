@@ -12,6 +12,7 @@ from coldpress_common import (
     validate_user_config,
     validate_cluster_config,
 )
+from coldpress.constants import COLDPRESS_VERSION
 from pydantic import ValidationError
 
 # Default directories (can be overridden with environment variables)
@@ -60,7 +61,7 @@ def _generate_manifest_filename(subcommand, config_file):
 
 
 @click.group()
-@click.version_option(version="0.2.0")
+@click.version_option(version=COLDPRESS_VERSION)
 def cli():
     """Coldpress Setup - Generate manifests for cluster setup and configuration."""
     pass
@@ -225,6 +226,9 @@ def generate_cluster_config(config_file, output_dir):
             for node in validated_config.nodes
         ]
     except ValidationError as e:
+        # Degraded functionality: cluster manifests can still be generated without node-specific
+        # labeling commands. This allows basic cluster setup even if the cluster config has
+        # validation errors in the nodes section. Node labeling is an optional enhancement.
         click.echo(f"Warning: Could not validate cluster config: {e}", err=True)
         click.echo("Continuing without node labeling commands...", err=True)
 
@@ -241,7 +245,7 @@ def generate_cluster_config(config_file, output_dir):
     # Copy cluster config to output directory (all documents except the first config one)
     with open(output_path, "w") as f:
         # Write only the Kubernetes manifests (skip the config section)
-        yaml.dump_all(all_docs[1:], f, default_flow_style=False, sort_keys=False)
+        yaml.safe_dump_all(all_docs[1:], f, default_flow_style=False, sort_keys=False)
 
     # Generate node labeling script if nodes were found
     label_script_path = None

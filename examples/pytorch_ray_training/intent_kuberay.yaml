@@ -1,0 +1,20 @@
+project: coldpress-project
+output: ray-training-job
+target: kuberay
+
+files:
+  - train.py
+
+discovery:
+  template: user_snapshot
+  tasks: all
+
+tasks:
+  - name: ray-training
+    replicas: 2  # Coldpress transforms single-node (2 GPU) into 2-pod cluster (1 head + 1 worker = 4 GPUs total)
+
+    args:
+      # Scale Ray Train workers to match total GPUs (2 pods × 2 GPUs = 4 workers)
+      num-workers: "4"  # Total GPUs across all pods
+      gpus-per-worker: "1"  # 1 GPU per worker for proper device handling
+      cpus-per-worker: "2"  # 2 CPUs per worker

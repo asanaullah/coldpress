@@ -1,26 +1,23 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: ddp-training
+  name: ray-training
   namespace: coldpress-project
 spec:
   template:
     metadata:
       labels:
-        app: ddp-training
+        app: ray-training
     spec:
       restartPolicy: Never
       tolerations:
         - operator: Exists
       containers:
         - name: training
-          image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+          image: rayproject/ray-ml:2.9.0-py310-gpu
           workingDir: /workspace
           command:
             - python
-            - -m
-            - torch.distributed.run
-            - --nproc_per_node=2
             - train.py
             - --dataset=mnist
             - --train-test-split=0.8
@@ -29,6 +26,9 @@ spec:
             - --hidden-size=4096
             - --lr=0.01
             - --output-dir=/results/checkpoints
+            - --num-workers=1
+            - --gpus-per-worker=2
+            - --cpus-per-worker=4
           resources:
             requests:
               nvidia.com/gpu: "2"
@@ -58,4 +58,4 @@ spec:
             sizeLimit: 16Gi
         - name: training-script
           configMap:
-            name: ddp-training-files
+            name: ray-training-files

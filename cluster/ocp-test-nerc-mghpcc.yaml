@@ -30,6 +30,8 @@ spec:
         - "BatchJob"
         - "JobSet"
         - "Pod"
+        - "PyTorchJob"
+        - "RayJob"
 ---
 # JobSet Operator
 apiVersion: operator.openshift.io/v1
@@ -42,7 +44,7 @@ spec:
   operatorLogLevel: Normal
 ---
 # ResourceFlavor for node0
-apiVersion: kueue.x-k8s.io/v1beta1
+apiVersion: kueue.x-k8s.io/v1beta2
 kind: ResourceFlavor
 metadata:
   name: node0
@@ -51,7 +53,7 @@ spec:
     coldpress.node: "0"
 ---
 # ResourceFlavor for node1
-apiVersion: kueue.x-k8s.io/v1beta1
+apiVersion: kueue.x-k8s.io/v1beta2
 kind: ResourceFlavor
 metadata:
   name: node1
@@ -60,7 +62,7 @@ spec:
     coldpress.node: "1"
 ---
 # ClusterQueue for Coldpress
-apiVersion: kueue.x-k8s.io/v1beta1
+apiVersion: kueue.x-k8s.io/v1beta2
 kind: ClusterQueue
 metadata:
   name: coldpress-cluster-queue

@@ -25,7 +25,7 @@ def test_label_constants():
 
     expected = {
         "app.kubernetes.io/managed-by": "coldpress",
-        "app.kubernetes.io/version": "0.2.0",
+        "app.kubernetes.io/version": "0.2.1",
     }
 
     assert COLDPRESS_JOB_LABELS == expected, (
@@ -78,7 +78,7 @@ def test_jobset_labels():
     assert "app.kubernetes.io/managed-by" in labels
     assert labels["app.kubernetes.io/managed-by"] == "coldpress"
     assert "app.kubernetes.io/version" in labels
-    assert labels["app.kubernetes.io/version"] == "0.2.0"
+    assert labels["app.kubernetes.io/version"] == "0.2.1"
 
     print(f"✅ JobSet labels: {labels}")
 
@@ -233,7 +233,7 @@ def main():
     print("=" * 60)
     print("\nAll Coldpress resources have standard labels:")
     print("  - app.kubernetes.io/managed-by: coldpress")
-    print("  - app.kubernetes.io/version: 0.2.0")
+    print("  - app.kubernetes.io/version: 0.2.1")
     print("  - coldpress.io/job-id: {job_name} (for job resources)")
     print("\nQuery all resources:")
     print(

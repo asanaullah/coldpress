@@ -51,6 +51,10 @@ jobs:
       run: |
         python tests/test_security.py
 
+    - name: Run script generation security tests
+      run: |
+        python tests/test_script_gen_security.py
+
     - name: Run error handling tests
       run: |
         python tests/test_error_handling.py

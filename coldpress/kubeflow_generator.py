@@ -2,493 +2,11 @@
 """Kubeflow manifest generation for Coldpress jobs."""
 
 import yaml
-from .generator import (
-    COLDPRESS_LABELS,
-    generate_base_dir,
-    extract_container_config,
-    build_volumes_from_task,
-    build_volume_mounts_from_task,
-    detect_job_type,
-    detect_framework,
+from .utils import (
+    apply_arg_overrides,
+    apply_env_overrides,
+    build_discovery_init_container,
 )
-
-
-def generate_kubeflow(job_spec, node_assignments):
-    """Generate Kubeflow manifest (PyTorchJob or InferenceService).
-
-    Auto-detects job type:
-    - Training job → PyTorchJob/TFJob/MPIJob
-    - Inference job → KServe InferenceService
-
-    Args:
-        job_spec: Job specification dict
-        node_assignments: Node assignment dict
-
-    Returns:
-        tuple: (manifest_dict, base_dir, manifest_type)
-            manifest_type is 'pytorchjob', 'tfjob', 'mpijob', or 'inferenceservice'
-    """
-    tasks = job_spec["tasks"]
-    if len(tasks) == 0:
-        raise ValueError("No tasks specified in job spec")
-
-    # For now, only handle single-task jobs
-    task = tasks[0]
-    job_type = detect_job_type(task)
-
-    if job_type == "inference":
-        return generate_inferenceservice(job_spec, node_assignments)
-    else:
-        # Training job
-        framework = detect_framework(task)
-        if framework == "pytorch":
-            return generate_pytorchjob(job_spec, node_assignments)
-        elif framework == "tensorflow":
-            return generate_tfjob(job_spec, node_assignments)
-        elif framework == "mpi":
-            return generate_mpijob(job_spec, node_assignments)
-        else:
-            # Default to PyTorchJob if framework unclear
-            return generate_pytorchjob(job_spec, node_assignments)
-
-
-def _build_mkdir_init_container(base_dir, storage_pvc_name):
-    """Build init container to create directory structure.
-
-    Args:
-        base_dir: Base directory path to create
-        storage_pvc_name: Name of the PVC for storage
-
-    Returns:
-        dict: Init container spec
-    """
-    return {
-        "name": "mkdir",
-        "image": "registry.access.redhat.com/ubi9/ubi-minimal:latest",
-        "command": [
-            "sh",
-            "-c",
-            f"mkdir -p /mnt/coldpress-data/{base_dir} && echo Created directory {base_dir}",
-        ],
-        "volumeMounts": [
-            {"name": "coldpress-data", "mountPath": "/mnt/coldpress-data"}
-        ],
-    }
-
-
-def generate_pytorchjob(job_spec, node_assignments):
-    """Generate PyTorchJob manifest from job spec.
-
-    Args:
-        job_spec: Job specification dict
-        node_assignments: Node assignment dict
-
-    Returns:
-        tuple: (pytorchjob_dict, base_dir, 'pytorchjob')
-    """
-    namespace = job_spec["namespace"]
-    tasks = job_spec["tasks"]
-    task = tasks[0]  # Single task for now
-    job_name = job_spec["name"]
-
-    # Generate base directory for results
-    base_dir = generate_base_dir(namespace, job_name)
-
-    # Get storage PVC name
-    storage = job_spec.get("storage", {})
-    storage_pvc_name = storage.get("results", f"coldpress-{namespace}-storage")
-
-    # Extract container configuration
-    container_config = extract_container_config(task)
-
-    # Build container spec
-    container = {
-        "name": container_config.get("name", "pytorch"),
-        "image": container_config["image"],
-    }
-
-    if container_config.get("command"):
-        container["command"] = container_config["command"]
-    if container_config.get("args"):
-        container["args"] = container_config["args"]
-    if container_config.get("working_dir"):
-        container["workingDir"] = container_config["working_dir"]
-    if container_config.get("env"):
-        container["env"] = container_config["env"]
-
-    # Add resources
-    if container_config.get("resources"):
-        container["resources"] = container_config["resources"]
-
-    # Build volume mounts
-    volume_mounts = build_volume_mounts_from_task(task)
-
-    # Add ConfigMap volume mount if present
-    if "configmap" in job_spec:
-        volume_mounts.append({"name": "config-files", "mountPath": "/workspace"})
-
-    if volume_mounts:
-        container["volumeMounts"] = volume_mounts
-
-    # Build volumes
-    volumes = build_volumes_from_task(task, job_spec)
-
-    # Ensure coldpress-data PVC is in volumes (needed for init container)
-    if not any(v.get("name") == "coldpress-data" for v in volumes):
-        volumes.insert(
-            0,
-            {
-                "name": "coldpress-data",
-                "persistentVolumeClaim": {"claimName": storage_pvc_name},
-            },
-        )
-
-    # Add ConfigMap volume if present
-    if "configmap" in job_spec:
-        cm_name = job_spec["configmap"]["name"]
-        # Add coldpress- prefix if not already present
-        if not cm_name.startswith("coldpress-"):
-            cm_name = f"coldpress-{cm_name}"
-        volumes.append({"name": "config-files", "configMap": {"name": cm_name}})
-
-    # Add init container to create directories
-    mkdir_init = _build_mkdir_init_container(base_dir, storage_pvc_name)
-
-    # Build pod template
-    pod_template = {
-        "metadata": {
-            "annotations": {
-                "sidecar.istio.io/inject": "false"  # Prescriptive: disable Istio
-            }
-        },
-        "spec": {
-            "initContainers": [mkdir_init],
-            "containers": [container],
-            "restartPolicy": "OnFailure",
-        },
-    }
-
-    if volumes:
-        pod_template["spec"]["volumes"] = volumes
-
-    # Apply node selector if specified
-    node_id = node_assignments.get(0, "any")
-    if node_id != "any":
-        pod_template["spec"]["nodeSelector"] = {"coldpress.node": str(node_id)}
-
-    # Apply tolerations if task requires
-    if task.get("tolerate_all"):
-        pod_template["spec"]["tolerations"] = [{"operator": "Exists"}]
-
-    # Build PyTorchJob manifest
-    pytorchjob_name = f"coldpress-{job_name}"
-    pytorchjob_labels = COLDPRESS_LABELS.copy()
-    pytorchjob_labels.update(
-        {
-            "coldpress.io/job-id": pytorchjob_name,
-            "kueue.x-k8s.io/queue-name": f"coldpress-local-queue-{namespace}",  # Required for Kueue integration
-        }
-    )
-
-    # Add coldpress labels to pod template
-    if "labels" not in pod_template["metadata"]:
-        pod_template["metadata"]["labels"] = {}
-    pod_template["metadata"]["labels"].update(COLDPRESS_LABELS.copy())
-    pod_template["metadata"]["labels"]["coldpress.io/job-id"] = pytorchjob_name
-
-    pytorchjob = {
-        "apiVersion": "kubeflow.org/v1",
-        "kind": "PyTorchJob",
-        "metadata": {
-            "name": pytorchjob_name,
-            "namespace": namespace,
-            "labels": pytorchjob_labels,
-            "annotations": {
-                "coldpress.io/base-dir": base_dir,
-                "kueue.x-k8s.io/wait-for-pods-ready-timeout": "20m",  # Allow time for image pulls
-            },
-        },
-        "spec": {
-            "pytorchReplicaSpecs": {
-                "Master": {
-                    "replicas": 1,
-                    "restartPolicy": "OnFailure",
-                    "template": pod_template,
-                }
-            }
-        },
-    }
-
-    return pytorchjob, base_dir, "pytorchjob"
-
-
-def generate_tfjob(job_spec, node_assignments):
-    """Generate TFJob manifest from job spec.
-
-    Args:
-        job_spec: Job specification dict
-        node_assignments: Node assignment dict
-
-    Returns:
-        tuple: (tfjob_dict, base_dir, 'tfjob')
-    """
-    namespace = job_spec["namespace"]
-    tasks = job_spec["tasks"]
-    task = tasks[0]
-    job_name = job_spec["name"]
-
-    base_dir = generate_base_dir(namespace, job_name)
-
-    # Get storage PVC name
-    storage = job_spec.get("storage", {})
-    storage_pvc_name = storage.get("results", f"coldpress-{namespace}-storage")
-
-    container_config = extract_container_config(task)
-
-    container = {
-        "name": "tensorflow",
-        "image": container_config["image"],
-    }
-
-    if container_config.get("command"):
-        container["command"] = container_config["command"]
-    if container_config.get("args"):
-        container["args"] = container_config["args"]
-    if container_config.get("resources"):
-        container["resources"] = container_config["resources"]
-
-    volume_mounts = build_volume_mounts_from_task(task)
-    if volume_mounts:
-        container["volumeMounts"] = volume_mounts
-
-    volumes = build_volumes_from_task(task, job_spec)
-
-    # Ensure coldpress-data PVC is in volumes (needed for init container)
-    if not any(v.get("name") == "coldpress-data" for v in volumes):
-        volumes.insert(
-            0,
-            {
-                "name": "coldpress-data",
-                "persistentVolumeClaim": {"claimName": storage_pvc_name},
-            },
-        )
-
-    # Add init container to create directories
-    mkdir_init = _build_mkdir_init_container(base_dir, storage_pvc_name)
-
-    pod_template = {
-        "metadata": {"annotations": {"sidecar.istio.io/inject": "false"}},
-        "spec": {
-            "initContainers": [mkdir_init],
-            "containers": [container],
-            "restartPolicy": "OnFailure",
-        },
-    }
-
-    if volumes:
-        pod_template["spec"]["volumes"] = volumes
-
-    # Add coldpress labels to pod template
-    if "labels" not in pod_template["metadata"]:
-        pod_template["metadata"]["labels"] = {}
-    tfjob_name = f"coldpress-{job_name}"
-    pod_template["metadata"]["labels"].update(COLDPRESS_LABELS.copy())
-    pod_template["metadata"]["labels"]["coldpress.io/job-id"] = tfjob_name
-
-    tfjob_labels = COLDPRESS_LABELS.copy()
-    tfjob_labels.update(
-        {
-            "coldpress.io/job-id": tfjob_name,
-            "kueue.x-k8s.io/queue-name": f"coldpress-local-queue-{namespace}",
-        }
-    )
-
-    tfjob = {
-        "apiVersion": "kubeflow.org/v1",
-        "kind": "TFJob",
-        "metadata": {
-            "name": tfjob_name,
-            "namespace": namespace,
-            "labels": tfjob_labels,
-            "annotations": {
-                "coldpress.io/base-dir": base_dir,
-                "kueue.x-k8s.io/wait-for-pods-ready-timeout": "20m",  # Allow time for image pulls
-            },
-        },
-        "spec": {
-            "tfReplicaSpecs": {
-                "Worker": {
-                    "replicas": 1,
-                    "restartPolicy": "OnFailure",
-                    "template": pod_template,
-                }
-            }
-        },
-    }
-
-    return tfjob, base_dir, "tfjob"
-
-
-def generate_mpijob(job_spec, node_assignments):
-    """Generate MPIJob manifest from job spec.
-
-    Args:
-        job_spec: Job specification dict
-        node_assignments: Node assignment dict
-
-    Returns:
-        tuple: (mpijob_dict, base_dir, 'mpijob')
-    """
-    namespace = job_spec["namespace"]
-    tasks = job_spec["tasks"]
-    task = tasks[0]
-    job_name = job_spec["name"]
-
-    base_dir = generate_base_dir(namespace, job_name)
-
-    # Get storage PVC name
-    storage = job_spec.get("storage", {})
-    storage_pvc_name = storage.get("results", f"coldpress-{namespace}-storage")
-
-    container_config = extract_container_config(task)
-
-    launcher_container = {
-        "name": "mpi-launcher",
-        "image": container_config["image"],
-    }
-
-    if container_config.get("command"):
-        launcher_container["command"] = container_config["command"]
-    if container_config.get("args"):
-        launcher_container["args"] = container_config["args"]
-    if container_config.get("resources"):
-        launcher_container["resources"] = container_config["resources"]
-
-    worker_container = launcher_container.copy()
-    worker_container["name"] = "mpi-worker"
-
-    mpijob_name = f"coldpress-{job_name}"
-    mpijob_labels = COLDPRESS_LABELS.copy()
-    mpijob_labels.update(
-        {
-            "coldpress.io/job-id": mpijob_name,
-            "kueue.x-k8s.io/queue-name": f"coldpress-local-queue-{namespace}",
-        }
-    )
-
-    # Add init container to create directories
-    mkdir_init = _build_mkdir_init_container(base_dir, storage_pvc_name)
-
-    # Build pod templates with coldpress labels
-    launcher_pod_template = {
-        "metadata": {
-            "labels": COLDPRESS_LABELS.copy(),
-            "annotations": {"sidecar.istio.io/inject": "false"},
-        },
-        "spec": {"initContainers": [mkdir_init], "containers": [launcher_container]},
-    }
-    launcher_pod_template["metadata"]["labels"]["coldpress.io/job-id"] = mpijob_name
-
-    worker_pod_template = {
-        "metadata": {
-            "labels": COLDPRESS_LABELS.copy(),
-            "annotations": {"sidecar.istio.io/inject": "false"},
-        },
-        "spec": {"initContainers": [mkdir_init], "containers": [worker_container]},
-    }
-    worker_pod_template["metadata"]["labels"]["coldpress.io/job-id"] = mpijob_name
-
-    mpijob = {
-        "apiVersion": "kubeflow.org/v2beta1",
-        "kind": "MPIJob",
-        "metadata": {
-            "name": mpijob_name,
-            "namespace": namespace,
-            "labels": mpijob_labels,
-            "annotations": {
-                "coldpress.io/base-dir": base_dir,
-                "kueue.x-k8s.io/wait-for-pods-ready-timeout": "20m",  # Allow time for image pulls
-            },
-        },
-        "spec": {
-            "slotsPerWorker": 1,
-            "runPolicy": {"cleanPodPolicy": "Running"},
-            "mpiReplicaSpecs": {
-                "Launcher": {"replicas": 1, "template": launcher_pod_template},
-                "Worker": {"replicas": 1, "template": worker_pod_template},
-            },
-        },
-    }
-
-    return mpijob, base_dir, "mpijob"
-
-
-def generate_inferenceservice(job_spec, node_assignments):
-    """Generate KServe InferenceService manifest from job spec.
-
-    Args:
-        job_spec: Job specification dict
-        node_assignments: Node assignment dict
-
-    Returns:
-        tuple: (inferenceservice_dict, base_dir, 'inferenceservice')
-    """
-    namespace = job_spec["namespace"]
-    tasks = job_spec["tasks"]
-    task = tasks[0]
-    job_name = job_spec["name"]
-
-    base_dir = generate_base_dir(namespace, job_name)
-
-    container_config = extract_container_config(task)
-    framework = detect_framework(task)
-
-    # Build predictor based on framework
-    predictor = {}
-
-    if framework == "pytorch":
-        predictor["pytorch"] = {
-            "storageUri": task.get("storageUri", "gs://bucket/model"),
-            "resources": container_config.get("resources", {}),
-        }
-    elif framework == "tensorflow":
-        predictor["tensorflow"] = {
-            "storageUri": task.get("storageUri", "gs://bucket/model"),
-            "resources": container_config.get("resources", {}),
-        }
-    else:
-        # Use custom container
-        predictor["containers"] = [
-            {
-                "name": "kserve-container",
-                "image": container_config["image"],
-                "resources": container_config.get("resources", {}),
-            }
-        ]
-
-    inferenceservice_name = f"coldpress-{job_name}"
-    inferenceservice_labels = COLDPRESS_LABELS.copy()
-    inferenceservice_labels.update(
-        {
-            "coldpress.io/job-id": inferenceservice_name,
-        }
-    )
-
-    inferenceservice = {
-        "apiVersion": "serving.kserve.io/v1beta1",
-        "kind": "InferenceService",
-        "metadata": {
-            "name": inferenceservice_name,
-            "namespace": namespace,
-            "labels": inferenceservice_labels,
-            "annotations": {
-                "coldpress.io/base-dir": base_dir,
-            },
-        },
-        "spec": {"predictor": predictor},
-    }
-
-    return inferenceservice, base_dir, "inferenceservice"
 
 
 def generate_inferenceservice_from_intent(
@@ -507,7 +25,6 @@ def generate_inferenceservice_from_intent(
         tuple: (InferenceService manifest, base_dir)
     """
     import copy
-    import re
     from datetime import datetime, timezone
     from .constants import (
         COLDPRESS_LABELS,
@@ -530,8 +47,12 @@ def generate_inferenceservice_from_intent(
     job_id = task_name
     inferenceservice_name = f"coldpress-{job_id}"
 
-    storage = project_config.get("storage", {})
-    data_pvc_name = storage.get("results", f"coldpress-{namespace}-storage")
+    # Storage is validated by Pydantic - if present, 'results' is required
+    storage = project_config.get("storage")
+    if storage:
+        data_pvc_name = storage["results"]
+    else:
+        data_pvc_name = f"coldpress-{namespace}-storage"
 
     # Generate base directory for results/logs
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -555,88 +76,15 @@ def generate_inferenceservice_from_intent(
     # Get replicas (for autoscaling configuration)
     replicas = task_intent.replicas or 1
 
-    # Build macros for arg/env substitution
-    def substitute_macros(value: str, macros: dict) -> str:
-        """Substitute ${MACRO} patterns in a string."""
-        if not isinstance(value, str):
-            return value
-
-        pattern = r"\$\{([^}]+)\}"
-
-        def replacer(match):
-            macro_name = match.group(1)
-            if macro_name not in macros:
-                return match.group(0)
-            return str(macros[macro_name])
-
-        return re.sub(pattern, replacer, value)
-
     # KServe macros
     macros = {
         "REPLICAS": str(replicas),
         "TASK_NAME": task_name,
     }
 
-    # Apply arg replacements
-    if task_intent.args and container.get("args"):
-        args = (
-            container["args"]
-            if isinstance(container["args"], list)
-            else [container["args"]]
-        )
-
-        for arg_key, arg_value in task_intent.args.items():
-            substituted_value = substitute_macros(arg_value, macros)
-
-            # Replace or add argument
-            new_args = []
-            i = 0
-            found = False
-
-            while i < len(args):
-                arg = str(args[i])
-
-                if arg.startswith(f"--{arg_key}="):
-                    new_args.append(f"--{arg_key}={substituted_value}")
-                    found = True
-                    i += 1
-                elif arg == f"--{arg_key}":
-                    new_args.append(arg)
-                    new_args.append(substituted_value)
-                    found = True
-                    i += 2
-                else:
-                    new_args.append(arg)
-                    i += 1
-
-            if not found:
-                new_args.append(f"--{arg_key}={substituted_value}")
-
-            args = new_args
-
-        container["args"] = args
-
-    # Apply env var additions/replacements
-    if task_intent.env:
-        env_list = container.get("env", [])
-        if not isinstance(env_list, list):
-            env_list = []
-
-        for env_key, env_value in task_intent.env.items():
-            substituted_value = substitute_macros(str(env_value), macros)
-
-            # Find and replace or append
-            found = False
-            for env_item in env_list:
-                if env_item.get("name") == env_key:
-                    env_item["value"] = substituted_value
-                    found = True
-                    break
-
-            if not found:
-                env_list.append({"name": env_key, "value": substituted_value})
-
-        container["env"] = env_list
+    # Apply arg and env var replacements using shared utilities
+    apply_arg_overrides(container, task_intent, macros)
+    apply_env_overrides(container, task_intent, macros)
 
     # Extract ports from container spec
     container.get("ports", [])
@@ -710,73 +158,7 @@ def kubeflow_to_yaml(manifest):
     Returns:
         str: YAML string
     """
-    return yaml.dump(manifest, default_flow_style=False, sort_keys=False)
-
-
-def _build_discovery_init_container(
-    template_path: str, base_dir: str, storage_volume_name: str
-):
-    """
-    Build discovery init container from template for Kubeflow.
-
-    Args:
-        template_path: Path to discovery template YAML
-        base_dir: Base directory path
-        storage_volume_name: Name of the storage volume to mount
-
-    Returns:
-        dict: Init container spec, or None if template not found
-    """
-    import os
-    import sys
-    import yaml
-    import copy
-
-    try:
-        # Read discovery template
-        with open(template_path, "r") as f:
-            template = yaml.safe_load(f)
-
-        # Extract Pod spec
-        pod_spec = template.get("spec", {})
-        containers = pod_spec.get("containers", [])
-
-        if not containers:
-            return None
-
-        # Get template name from filename
-        template_name = (
-            os.path.basename(template_path).replace(".yaml", "").replace(".yml", "")
-        )
-
-        # Copy container and modify for init container use
-        container = copy.deepcopy(containers[0])
-        container["name"] = "discovery"
-
-        # Update volume mounts to use PVC with base directory
-        container["volumeMounts"] = [
-            {
-                "name": storage_volume_name,
-                "mountPath": "/tmp/result",
-                "subPath": base_dir,
-            }
-        ]
-
-        # Add rename command to output discovery_{template_name}.json
-        original_command = (
-            container.get("args", [""])[0] if container.get("args") else ""
-        )
-        rename_cmd = f"\nif [ -f /tmp/result/discovery.json ]; then mv /tmp/result/discovery.json /tmp/result/discovery_{template_name}.json; fi"
-
-        if container.get("args"):
-            container["args"] = [original_command + rename_cmd]
-
-        return container
-    except (FileNotFoundError, yaml.YAMLError, KeyError, IndexError) as e:
-        sys.stderr.write(
-            f"Warning: Could not load discovery template {template_path}: {e}\n"
-        )
-        return None
+    return yaml.safe_dump(manifest, default_flow_style=False, sort_keys=False)
 
 
 def generate_pytorchjob_from_intent(
@@ -796,11 +178,11 @@ def generate_pytorchjob_from_intent(
     """
     import copy
     import os
-    import re
     from datetime import datetime, timezone
     from .constants import (
         COLDPRESS_LABELS,
         MKDIR_IMAGE,
+        DEFAULT_DISCOVERY_DIR,
         get_kueue_queue_label,
     )
 
@@ -820,8 +202,12 @@ def generate_pytorchjob_from_intent(
     job_id = task_name
     pytorchjob_name = f"coldpress-{job_id}"
 
-    storage = project_config.get("storage", {})
-    data_pvc_name = storage.get("results", f"coldpress-{namespace}-storage")
+    # Storage is validated by Pydantic - if present, 'results' is required
+    storage = project_config.get("storage")
+    if storage:
+        data_pvc_name = storage["results"]
+    else:
+        data_pvc_name = f"coldpress-{namespace}-storage"
 
     # Generate base directory for results
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -841,7 +227,7 @@ def generate_pytorchjob_from_intent(
         )
 
         # Resolve template path
-        discovery_dir = os.getenv("COLDPRESS_DISCOVERY_DIR", "discovery")
+        discovery_dir = os.getenv("COLDPRESS_DISCOVERY_DIR", DEFAULT_DISCOVERY_DIR)
         discovery_template_path = os.path.join(discovery_dir, f"{template_name}.yaml")
 
         # Determine which tasks should run discovery
@@ -871,88 +257,15 @@ def generate_pytorchjob_from_intent(
     # Get replicas (PyTorchJob workers)
     replicas = task_intent.replicas or 1
 
-    # Build macros for arg substitution (using Kubeflow auto-injected vars)
-    def substitute_macros(value: str, macros: dict) -> str:
-        """Substitute ${MACRO} patterns in a string."""
-        if not isinstance(value, str):
-            return value
-
-        pattern = r"\$\{([^}]+)\}"
-
-        def replacer(match):
-            macro_name = match.group(1)
-            if macro_name not in macros:
-                return match.group(0)
-            return str(macros[macro_name])
-
-        return re.sub(pattern, replacer, value)
-
     # Kubeflow macros - simpler because PyTorchJob auto-injects env vars
     macros = {
         "REPLICAS": str(replicas),
         "TASK_NAME": task_name,
     }
 
-    # Apply arg replacements
-    if task_intent.args and container.get("args"):
-        args = (
-            container["args"]
-            if isinstance(container["args"], list)
-            else [container["args"]]
-        )
-
-        for arg_key, arg_value in task_intent.args.items():
-            substituted_value = substitute_macros(arg_value, macros)
-
-            # Replace or add argument
-            new_args = []
-            i = 0
-            found = False
-
-            while i < len(args):
-                arg = str(args[i])
-
-                if arg.startswith(f"--{arg_key}="):
-                    new_args.append(f"--{arg_key}={substituted_value}")
-                    found = True
-                    i += 1
-                elif arg == f"--{arg_key}":
-                    new_args.append(arg)
-                    new_args.append(substituted_value)
-                    found = True
-                    i += 2
-                else:
-                    new_args.append(arg)
-                    i += 1
-
-            if not found:
-                new_args.append(f"--{arg_key}={substituted_value}")
-
-            args = new_args
-
-        container["args"] = args
-
-    # Apply env var additions/replacements
-    if task_intent.env:
-        env_list = container.get("env", [])
-        if not isinstance(env_list, list):
-            env_list = []
-
-        for env_key, env_value in task_intent.env.items():
-            substituted_value = substitute_macros(str(env_value), macros)
-
-            # Find and replace or append
-            found = False
-            for env_item in env_list:
-                if env_item.get("name") == env_key:
-                    env_item["value"] = substituted_value
-                    found = True
-                    break
-
-            if not found:
-                env_list.append({"name": env_key, "value": substituted_value})
-
-        container["env"] = env_list
+    # Apply arg and env var replacements using shared utilities
+    apply_arg_overrides(container, task_intent, macros)
+    apply_env_overrides(container, task_intent, macros)
 
     # Build pod spec
     pod_spec = {
@@ -1012,7 +325,7 @@ def generate_pytorchjob_from_intent(
                     break
 
         if storage_volume_name:
-            discovery_init = _build_discovery_init_container(
+            discovery_init = build_discovery_init_container(
                 discovery_template_path, base_dir, storage_volume_name
             )
             if discovery_init:

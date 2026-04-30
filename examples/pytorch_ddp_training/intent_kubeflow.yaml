@@ -12,10 +12,10 @@ discovery:
 tasks:
   - name: ddp-training
     replicas: 2
+
     args:
-      nnodes: "${REPLICAS}"
-      # Kubeflow PyTorchJob auto-injects:
-      # - MASTER_ADDR
-      # - MASTER_PORT
-      # - RANK (via RANK env var)
-      # So we don't need to specify them here
+      # Positioned insertion: nnodes after nproc_per_node
+      # PyTorchJob auto-injects MASTER_ADDR, MASTER_PORT, RANK via env vars
+      nnodes:
+        value: "${REPLICAS}"
+        insert_after: nproc_per_node

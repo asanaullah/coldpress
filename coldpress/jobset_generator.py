@@ -8,90 +8,24 @@ Generates JobSet manifests directly from:
 Direct transformation from vk8s to JobSet with no intermediate formats.
 """
 
-import os
-import re
 import copy
-import sys
+import os
 import yaml
 from datetime import datetime, timezone
 from .constants import (
     COLDPRESS_LABELS,
     MKDIR_IMAGE,
+    DEFAULT_DISCOVERY_DIR,
     get_kueue_queue_label,
     get_jobset_name,
     get_pvc_name,
 )
-
-
-def sanitize_value(value: str, context: str = "") -> str:
-    """
-    Sanitize a value for safe use in Kubernetes manifests.
-
-    Args:
-        value: Value to sanitize
-        context: Context for error messages
-
-    Returns:
-        Sanitized value
-
-    Raises:
-        ValueError: If value contains dangerous characters
-    """
-    if not isinstance(value, str):
-        return str(value)
-
-    # Check for shell metacharacters that could be dangerous in args
-    dangerous_chars = ["`", "$", "|", ";", "&", ">", "<", "\n", "\r"]
-    for char in dangerous_chars:
-        if char in value:
-            raise ValueError(
-                f"Invalid character '{char}' in value '{value}'{context}. "
-                f"This could be a security risk."
-            )
-
-    return value
-
-
-def substitute_macros(value: str, macros: dict[str, str], context: str = "") -> str:
-    """
-    Substitute ${MACRO} patterns in a string with sanitization.
-
-    Args:
-        value: String potentially containing ${MACRO} patterns
-        macros: Dict of macro names to values
-        context: Context for error messages (e.g., " for arg 'master_addr'")
-
-    Returns:
-        String with macros substituted
-
-    Raises:
-        ValueError: If macro value contains invalid characters
-    """
-    if not isinstance(value, str):
-        return value
-
-    pattern = r"\$\{([^}]+)\}"
-
-    def replacer(match):
-        macro_name = match.group(1)
-        if macro_name not in macros:
-            # Leave unresolved macros as-is
-            return match.group(0)
-
-        macro_value = str(macros[macro_name])
-
-        # Sanitize the macro value
-        try:
-            sanitized = sanitize_value(macro_value, f"{context} (macro: {macro_name})")
-        except ValueError as e:
-            raise ValueError(f"Macro substitution failed: {e}") from e
-
-        return sanitized
-
-    result = re.sub(pattern, replacer, value)
-
-    # Final sanitization of the complete result
-    return sanitize_value(result, context)
+from .utils import (
+    substitute_macros,
+    apply_arg_overrides,
+    apply_env_overrides,
+    build_discovery_init_container,
+)
 
 
 def build_replica_macros(
@@ -127,99 +61,6 @@ def build_replica_macros(
     return macros
 
 
-def replace_or_add_arg(args: list, key: str, value: str) -> list:
-    """Replace or add argument in args list."""
-    new_args = []
-    i = 0
-    found = False
-
-    while i < len(args):
-        arg = str(args[i])
-
-        if arg.startswith(f"--{key}="):
-            new_args.append(f"--{key}={value}")
-            found = True
-            i += 1
-        elif arg == f"--{key}":
-            new_args.append(arg)
-            new_args.append(value)
-            found = True
-            i += 2
-        else:
-            new_args.append(arg)
-            i += 1
-
-    if not found:
-        new_args.append(f"--{key}={value}")
-
-    return new_args
-
-
-def build_discovery_init_container(
-    template_path: str, task_id: int, base_dir: str, storage_volume_name: str
-):
-    """
-    Build discovery init container from template.
-
-    Args:
-        template_path: Path to discovery template YAML
-        task_id: Task ID for result path
-        base_dir: Base directory path
-        storage_volume_name: Name of the storage volume to mount
-
-    Returns:
-        dict: Init container spec, or None if template not found
-    """
-    try:
-        # Read discovery template
-        with open(template_path, "r") as f:
-            template = yaml.safe_load(f)
-
-        # Extract Pod spec
-        pod_spec = template.get("spec", {})
-        containers = pod_spec.get("containers", [])
-
-        if not containers:
-            return None
-
-        # Get template name from filename
-        template_name = (
-            os.path.basename(template_path).replace(".yaml", "").replace(".yml", "")
-        )
-
-        # Copy container and modify for init container use
-        container = copy.deepcopy(containers[0])
-        container["name"] = "discovery"
-
-        # Task-specific output path
-        task_result_path = f"{base_dir}/task-{task_id}"
-
-        # Update volume mounts to use PVC with task-specific path
-        container["volumeMounts"] = [
-            {
-                "name": storage_volume_name,
-                "mountPath": "/tmp/result",
-                "subPath": task_result_path,
-            }
-        ]
-
-        # Add rename command to output discovery_{template_name}.json
-        original_command = (
-            container.get("args", [""])[0] if container.get("args") else ""
-        )
-        rename_cmd = f"\nif [ -f /tmp/result/discovery.json ]; then mv /tmp/result/discovery.json /tmp/result/discovery_{template_name}.json; fi"
-
-        if container.get("args"):
-            container["args"] = [original_command + rename_cmd]
-
-        return container
-    except (FileNotFoundError, yaml.YAMLError, KeyError, IndexError) as e:
-        sys.stderr.write(
-            f"Warning: Could not load discovery template {template_path}: {e}\n"
-        )
-        return None
-
-
 def generate_jobset_from_intent(
     vk8s_jobs: dict, intent_config, project_config, namespace: str
 ):
@@ -242,8 +83,12 @@ def generate_jobset_from_intent(
         job_id = f"{intent_config.tasks[0].name}-workflow"
 
     jobset_name = get_jobset_name(job_id)
-    storage = project_config.get("storage", {})
-    data_pvc_name = storage.get("results", get_pvc_name(namespace))
+    # Storage is validated by Pydantic - if present, 'results' is required
+    storage = project_config.get("storage")
+    if storage:
+        data_pvc_name = storage["results"]
+    else:
+        data_pvc_name = get_pvc_name(namespace)
 
     # Generate base directory for results
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -263,7 +108,7 @@ def generate_jobset_from_intent(
         )
 
         # Resolve template path
-        discovery_dir = os.getenv("COLDPRESS_DISCOVERY_DIR", "discovery")
+        discovery_dir = os.getenv("COLDPRESS_DISCOVERY_DIR", DEFAULT_DISCOVERY_DIR)
         discovery_template_path = os.path.join(discovery_dir, f"{template_name}.yaml")
 
         # Determine which tasks should run discovery
@@ -518,56 +363,9 @@ def build_replicated_job_from_vk8s(
                     env_item["value"], macros, context
                 )
 
-    # Apply arg replacements
-    if task_intent.args and container.get("args"):
-        args = (
-            container["args"]
-            if isinstance(container["args"], list)
-            else [container["args"]]
-        )
-
-        for arg_key, arg_value in task_intent.args.items():
-            # Validate arg key follows Kubernetes conventions
-            if (
-                not arg_key.replace("_", "-")
-                .replace(".", "-")
-                .replace("/", "-")
-                .isalnum()
-            ):
-                # Allow alphanumeric, _, -, ., / in arg keys
-                pass  # Most arg keys are valid
-
-            # Substitute macros with validation
-            context = f" for arg '--{arg_key}'"
-            substituted_value = substitute_macros(arg_value, macros, context)
-            args = replace_or_add_arg(args, arg_key, substituted_value)
-
-        container["args"] = args
-
-    # Apply env var additions/replacements
-    if task_intent.env:
-        # Get existing env vars
-        env_list = container.get("env", [])
-        if not isinstance(env_list, list):
-            env_list = []
-
-        for env_key, env_value in task_intent.env.items():
-            # Substitute macros with validation
-            context = f" for env var '{env_key}'"
-            substituted_value = substitute_macros(str(env_value), macros, context)
-
-            # Find and replace or append
-            found = False
-            for env_item in env_list:
-                if env_item.get("name") == env_key:
-                    env_item["value"] = substituted_value
-                    found = True
-                    break
-
-            if not found:
-                env_list.append({"name": env_key, "value": substituted_value})
-
-        container["env"] = env_list
+    # Apply arg and env var replacements using shared utilities
+    apply_arg_overrides(container, task_intent, macros)
+    apply_env_overrides(container, task_intent, macros)
 
     # Build pod spec
     pod_spec = {
@@ -602,7 +400,7 @@ def build_replicated_job_from_vk8s(
     # Add discovery init container if specified
     if discovery_template_path and storage_volume_name:
         discovery_init = build_discovery_init_container(
-            discovery_template_path, task_counter, base_dir, storage_volume_name
+            discovery_template_path, base_dir, storage_volume_name, task_counter
         )
         if discovery_init:
             pod_spec["initContainers"] = [discovery_init]
@@ -666,13 +464,11 @@ def build_replicated_job_from_vk8s(
 
 def jobset_to_yaml(jobset: dict) -> str:
     """Convert JobSet dict to YAML string."""
-    import yaml
 
-    return yaml.dump(jobset, default_flow_style=False, sort_keys=False)
+    return yaml.safe_dump(jobset, default_flow_style=False, sort_keys=False)
 
 
 def services_to_yaml(services: list) -> str:
     """Convert Services list to YAML string."""
-    import yaml
 
-    return yaml.dump_all(services, default_flow_style=False, sort_keys=False)
+    return yaml.safe_dump_all(services, default_flow_style=False, sort_keys=False)

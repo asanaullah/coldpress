@@ -21,25 +21,17 @@ spec:
       containers:
         - name: server
           image: nvcr.io/nvidia/vllm:26.03-py3
-          command: ["bash", "-c"]
-          args:
-            - |
-              python -m vllm.entrypoints.openai.api_server \
-                --model="${VLLM_MODEL}" \
-                --port="${VLLM_PORT}" \
-                --max-model-len="${VLLM_MAX_MODEL_LEN}" \
-                --gpu-memory-utilization="${VLLM_GPU_MEMORY_UTIL}"
+          command:
+            - python
+            - -m
+            - vllm.entrypoints.openai.api_server
+            - --model=ibm-granite/granite-3.3-8b-instruct
+            - --port=8000
+            - --max-model-len=10000
+            - --gpu-memory-utilization=0.6
           env:
             - name: HOME
               value: /tmp
-            - name: VLLM_MODEL
-              value: "ibm-granite/granite-3.3-8b-instruct"
-            - name: VLLM_PORT
-              value: "8000"
-            - name: VLLM_MAX_MODEL_LEN
-              value: "10000"
-            - name: VLLM_GPU_MEMORY_UTIL
-              value: "0.6"
           ports:
             - containerPort: 8000
               name: http
@@ -80,34 +72,20 @@ spec:
       containers:
         - name: client
           image: ghcr.io/vllm-project/guidellm:nightly
-          command: ["bash", "-c"]
-          args:
-            - |
-              guidellm benchmark run \
-                --target "${GUIDELLM_TARGET}" \
-                --output-dir "${GUIDELLM_OUTPUT_DIR}" \
-                --outputs "${GUIDELLM_OUTPUTS}" \
-                --max-seconds ${GUIDELLM_MAX_SECONDS} \
-                --rate-type ${GUIDELLM_RATE_TYPE} \
-                --rate ${GUIDELLM_RATE} \
-                --data "${GUIDELLM_DATA}"
+          command:
+            - guidellm
+            - benchmark
+            - run
+            - --target=http://localhost:8000
+            - --output-dir=/results
+            - --outputs=json
+            - --max-seconds=30
+            - --rate-type=throughput
+            - --rate=1
+            - --data=prompt_tokens=256,output_tokens=128
           env:
             - name: HOME
               value: /tmp
-            - name: GUIDELLM_TARGET
-              value: "http://localhost:8000"
-            - name: GUIDELLM_OUTPUT_DIR
-              value: "/results"
-            - name: GUIDELLM_OUTPUTS
-              value: "json"
-            - name: GUIDELLM_MAX_SECONDS
-              value: "30"
-            - name: GUIDELLM_RATE_TYPE
-              value: "throughput"
-            - name: GUIDELLM_RATE
-              value: "1"
-            - name: GUIDELLM_DATA
-              value: "prompt_tokens=256,output_tokens=128"
           volumeMounts:
             - name: results
               mountPath: /results

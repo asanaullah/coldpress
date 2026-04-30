@@ -2,8 +2,8 @@
 namespace: coldpress-project
 
 # Target platforms - determines which RBAC permissions to grant
-# Options: jobset, kubeflow, or both (comma-separated)
-targets: jobset,kubeflow
+# Options: jobset, kubeflow, kuberay, or combination (comma-separated)
+targets: jobset,kubeflow,kuberay
 
 # References to cluster-wide resources
 cluster_queue: coldpress-cluster-queue

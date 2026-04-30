@@ -71,6 +71,10 @@ htmlcov/
 legacy/
 *.legacy
 
+# Development features (not ready for release)
+coldpress/distributed/
+examples/pytorch_coldpress_run/
+
 # Generated output directories
 output/
 manifests/

@@ -15,5 +15,5 @@ tasks:
     depends_on:
       task: inference-server
       wait_for: ready
-    env:
-      GUIDELLM_TARGET: "http://${REPLICA_inference-server_0}:8000"
+    args:
+      target: "http://${REPLICA_inference-server_0}:8000"
