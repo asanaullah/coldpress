@@ -32,7 +32,7 @@ Coldpress is a prescriptive manifest generator that reduces the effort and exper
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ Prerequisites: Kueue and JobSet operators must be installed    │
+│ Prerequisites: Operators must be installed (see Requirements)  │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
