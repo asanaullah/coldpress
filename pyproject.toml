@@ -8,7 +8,7 @@ name = "coldpress"
 version = "0.2.1"
 description = "AI/HPC workload orchestration for Kubernetes/OpenShift"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = {text = "See LICENSE file"}
 dependencies = [
     "click>=8.0.0",

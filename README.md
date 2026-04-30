@@ -581,7 +581,7 @@ coldpress/
   - KServe (v0.11+) - for `target: kserve`
 
 **Local development:**
-- Python 3.9+ (tested on Python 3.14)
+- Python 3.10+ (tested on Python 3.14)
 
 **Cluster tools:**
 - `oc` CLI (tested with oc 4.17.0)
