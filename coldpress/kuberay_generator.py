@@ -4,20 +4,21 @@
 Transforms single-node Ray Train jobs into distributed RayJob manifests.
 """
 
-import os
 import copy
 import yaml
 from datetime import datetime, timezone
 from .constants import (
     COLDPRESS_LABELS,
     MKDIR_IMAGE,
-    DEFAULT_DISCOVERY_DIR,
     get_kueue_queue_label,
 )
 from .utils import (
     apply_arg_overrides,
     apply_env_overrides,
     build_discovery_init_container,
+    parse_discovery_config,
+    get_storage_pvc_name,
+    DANGEROUS_SHELL_CHARS,
 )
 
 
@@ -57,13 +58,7 @@ def generate_rayjob_from_intent(
     # Determine job name
     job_id = task_name
     rayjob_name = f"coldpress-{job_id}"
-
-    # Storage is validated by Pydantic - if present, 'results' is required
-    storage = project_config.get("storage")
-    if storage:
-        data_pvc_name = storage["results"]
-    else:
-        data_pvc_name = f"coldpress-{namespace}-storage"
+    data_pvc_name = get_storage_pvc_name(project_config, namespace)
 
     # Generate base directory for results
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -71,30 +66,9 @@ def generate_rayjob_from_intent(
     base_dir = f"{namespace}/coldpress_results/{job_id}-{short_hash:08x}-{timestamp}"
 
     # Extract discovery configuration
-    discovery_template_path = None
-    discovery_task_names = set()
-
-    if intent_config.discovery:
-        discovery_config = intent_config.discovery
-        template_name = (
-            discovery_config.template
-            if hasattr(discovery_config, "template")
-            else discovery_config
-        )
-
-        # Resolve template path
-        discovery_dir = os.getenv("COLDPRESS_DISCOVERY_DIR", DEFAULT_DISCOVERY_DIR)
-        discovery_template_path = os.path.join(discovery_dir, f"{template_name}.yaml")
-
-        # Determine which tasks should run discovery
-        discovery_tasks = (
-            discovery_config.tasks if hasattr(discovery_config, "tasks") else "all"
-        )
-
-        if discovery_tasks == "all":
-            discovery_task_names = {task.name for task in intent_config.tasks}
-        elif isinstance(discovery_tasks, list):
-            discovery_task_names = set(discovery_tasks)
+    discovery_template_path, discovery_task_names = parse_discovery_config(
+        intent_config
+    )
 
     # Extract vk8s Job spec (single-node pod template)
     vk8s_spec = vk8s_job.get("spec", {}).get("template", {}).get("spec", {})
@@ -197,6 +171,15 @@ def generate_rayjob_from_intent(
     # Build init containers for head
     init_containers = []
 
+    # Validate base_dir contains no shell metacharacters (defense in depth)
+    for char in DANGEROUS_SHELL_CHARS:
+        if char in base_dir:
+            raise ValueError(
+                f"Invalid character '{char}' in base_dir '{base_dir}'. "
+                f"This could be a security risk."
+            )
+
+    # SAFETY: base_dir validated above, replicas is int - safe for shell command
     # Add mkdir init container - create directories for head and all workers
     # Also create workspace and output directories for training files and results
     mkdir_dirs = (
@@ -216,6 +199,7 @@ def generate_rayjob_from_intent(
     }
     init_containers.append(mkdir_init)
 
+    # SAFETY: base_dir validated above - safe for shell command
     # Add init container to copy training files to shared storage
     # This makes them accessible to Ray job submission
     # Use -L to dereference symlinks (ConfigMaps create symlinks)

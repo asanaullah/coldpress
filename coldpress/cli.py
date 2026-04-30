@@ -16,6 +16,8 @@ import click
 import yaml
 import os
 import json
+import shutil
+import traceback
 from datetime import datetime, timezone
 
 from .jobset_generator import (
@@ -33,17 +35,18 @@ from .kuberay_generator import (
     kuberay_to_yaml,
 )
 from .script_gen import write_scripts
-from .constants import COLDPRESS_VERSION
+from .constants import (
+    COLDPRESS_VERSION,
+    BACKEND_NAME_MAP,
+    DEFAULT_PROJECT_DIR,
+    DEFAULT_OUTPUT_DIR,
+)
+from .utils import extract_configmap_name, get_storage_pvc_name
 from coldpress_common import (
     validate_intent,
     validate_project_config,
 )
 from pydantic import ValidationError
-
-# Default directories (can be overridden with environment variables)
-DISCOVERY_DIR = os.getenv("COLDPRESS_DISCOVERY_DIR", "discovery")
-PROJECT_DIR = os.getenv("COLDPRESS_PROJECT_DIR", "projects")
-OUTPUT_DIR = os.getenv("COLDPRESS_OUTPUT_DIR", "output")
 
 
 @click.group()
@@ -103,7 +106,9 @@ def _load_vk8s_jobs(job_spec_path):
 
 def _load_project_config(project_name):
     """Load project configuration file."""
-    project_config_file = os.path.join(PROJECT_DIR, f"{project_name}.yaml")
+    # Read config at call time to enable testing and runtime reconfiguration
+    project_dir = os.getenv("COLDPRESS_PROJECT_DIR", DEFAULT_PROJECT_DIR)
+    project_config_file = os.path.join(project_dir, f"{project_name}.yaml")
     if not os.path.exists(project_config_file):
         raise FileNotFoundError(f"Project config not found: {project_config_file}")
 
@@ -152,6 +157,9 @@ def generate(intent):
         coldpress generate -i examples/vllm_guidellm_benchmark/intent.yaml
     """
     try:
+        # Read config at call time to enable testing and runtime reconfiguration
+        output_dir = os.getenv("COLDPRESS_OUTPUT_DIR", DEFAULT_OUTPUT_DIR)
+
         # Load and validate intent.yaml
         intent_config = _load_intent(intent)
         intent_dir = os.path.dirname(os.path.abspath(intent))
@@ -164,7 +172,7 @@ def generate(intent):
         project_config, namespace = _load_project_config(intent_config.project)
 
         # Output path
-        output_path = os.path.join(OUTPUT_DIR, intent_config.output)
+        output_path = os.path.join(output_dir, intent_config.output)
 
         # Display generation info
         click.echo("Generating manifests")
@@ -178,13 +186,7 @@ def generate(intent):
 
         # Use backend from intent.yaml
         backend = intent_config.target
-        backend_name_map = {
-            "kubeflow": "Kubeflow",
-            "kserve": "KServe",
-            "kuberay": "KubeRay",
-            "jobset": "JobSet",
-        }
-        backend_name = backend_name_map.get(backend, "JobSet")
+        backend_name = BACKEND_NAME_MAP.get(backend, "JobSet")
         click.echo(f"Target: {backend_name}")
 
         # Generate manifests based on target
@@ -247,8 +249,6 @@ def generate(intent):
 
         # Copy ConfigMap files
         if intent_config.files:
-            import shutil
-
             for file_name in intent_config.files:
                 src_path = os.path.join(intent_dir, file_name)
                 dst_path = os.path.join(output_path, file_name)
@@ -275,65 +275,15 @@ def generate(intent):
         configmap_name = None
         configmap_files = []
         if intent_config.files:
-            # Extract ConfigMap name from the manifest
-            if manifest_type == "jobset":
-                # Search for configMap volumes in JobSet manifest
-                for replicated_job in manifest.get("spec", {}).get(
-                    "replicatedJobs", []
-                ):
-                    job_template = (
-                        replicated_job.get("template", {})
-                        .get("spec", {})
-                        .get("template", {})
-                    )
-                    volumes = job_template.get("spec", {}).get("volumes", [])
-                    for volume in volumes:
-                        if "configMap" in volume:
-                            configmap_name = volume["configMap"]["name"]
-                            break
-                    if configmap_name:
-                        break
-            elif manifest_type == "pytorchjob":
-                # Search for configMap volumes in PyTorchJob manifest
-                replica_specs = manifest.get("spec", {}).get("pytorchReplicaSpecs", {})
-                for replica_type, replica_spec in replica_specs.items():
-                    volumes = (
-                        replica_spec.get("template", {})
-                        .get("spec", {})
-                        .get("volumes", [])
-                    )
-                    for volume in volumes:
-                        if "configMap" in volume:
-                            configmap_name = volume["configMap"]["name"]
-                            break
-                    if configmap_name:
-                        break
-            elif manifest_type == "rayjob":
-                # Search for configMap volumes in RayJob manifest (head group)
-                head_spec = (
-                    manifest.get("spec", {})
-                    .get("rayClusterSpec", {})
-                    .get("headGroupSpec", {})
-                )
-                volumes = (
-                    head_spec.get("template", {}).get("spec", {}).get("volumes", [])
-                )
-                for volume in volumes:
-                    if "configMap" in volume:
-                        configmap_name = volume["configMap"]["name"]
-                        break
+            # Extract ConfigMap name from the manifest using shared utility
+            configmap_name = extract_configmap_name(manifest, manifest_type)
 
             # If we found a configmap reference, use the files from intent
             if configmap_name:
                 configmap_files = list(intent_config.files)
 
         # Generate bash scripts
-        # Storage is validated by Pydantic - if present, 'results' is required
-        storage = project_config.get("storage")
-        if storage:
-            storage_pvc = storage["results"]
-        else:
-            storage_pvc = f"coldpress-{namespace}-storage"
+        storage_pvc = get_storage_pvc_name(project_config, namespace)
         # Strip coldpress- prefix from manifest name for scripts (script_gen will add it back)
         job_name_for_scripts = manifest["metadata"]["name"]
         if job_name_for_scripts.startswith("coldpress-"):
@@ -383,8 +333,6 @@ def generate(intent):
         raise SystemExit(1)
     except (ValidationError, yaml.YAMLError, OSError, PermissionError) as e:
         click.echo(f"Error generating JobSet: {e}", err=True)
-        import traceback
-
         traceback.print_exc()
         raise SystemExit(1)
 

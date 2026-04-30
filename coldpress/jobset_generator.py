@@ -9,22 +9,22 @@ Direct transformation from vk8s to JobSet with no intermediate formats.
 """
 
 import copy
-import os
 import yaml
 from datetime import datetime, timezone
 from .constants import (
     COLDPRESS_LABELS,
     MKDIR_IMAGE,
-    DEFAULT_DISCOVERY_DIR,
     get_kueue_queue_label,
     get_jobset_name,
-    get_pvc_name,
 )
 from .utils import (
     substitute_macros,
     apply_arg_overrides,
     apply_env_overrides,
     build_discovery_init_container,
+    parse_discovery_config,
+    get_storage_pvc_name,
+    DANGEROUS_SHELL_CHARS,
 )
 
 
@@ -83,12 +83,7 @@ def generate_jobset_from_intent(
         job_id = f"{intent_config.tasks[0].name}-workflow"
 
     jobset_name = get_jobset_name(job_id)
-    # Storage is validated by Pydantic - if present, 'results' is required
-    storage = project_config.get("storage")
-    if storage:
-        data_pvc_name = storage["results"]
-    else:
-        data_pvc_name = get_pvc_name(namespace)
+    data_pvc_name = get_storage_pvc_name(project_config, namespace)
 
     # Generate base directory for results
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -96,31 +91,9 @@ def generate_jobset_from_intent(
     base_dir = f"{namespace}/coldpress_results/{job_id}-{short_hash:08x}-{timestamp}"
 
     # Extract discovery configuration
-    discovery_template_path = None
-    discovery_task_names = set()
-
-    if intent_config.discovery:
-        discovery_config = intent_config.discovery
-        template_name = (
-            discovery_config.template
-            if hasattr(discovery_config, "template")
-            else discovery_config
-        )
-
-        # Resolve template path
-        discovery_dir = os.getenv("COLDPRESS_DISCOVERY_DIR", DEFAULT_DISCOVERY_DIR)
-        discovery_template_path = os.path.join(discovery_dir, f"{template_name}.yaml")
-
-        # Determine which tasks should run discovery
-        discovery_tasks = (
-            discovery_config.tasks if hasattr(discovery_config, "tasks") else "all"
-        )
-
-        if discovery_tasks == "all":
-            discovery_task_names = {task.name for task in intent_config.tasks}
-        elif isinstance(discovery_tasks, list):
-            # discovery_tasks is a list of task names
-            discovery_task_names = set(discovery_tasks)
+    discovery_template_path, discovery_task_names = parse_discovery_config(
+        intent_config
+    )
 
     # Build replicated jobs
     replicated_jobs = []
@@ -286,6 +259,15 @@ def build_mkdir_job(
     base_dir: str, pvc_name: str, task_count: int, namespace: str
 ) -> dict:
     """Build mkdir initialization job."""
+    # Validate base_dir contains no shell metacharacters (defense in depth)
+    for char in DANGEROUS_SHELL_CHARS:
+        if char in base_dir:
+            raise ValueError(
+                f"Invalid character '{char}' in base_dir '{base_dir}'. "
+                f"This could be a security risk."
+            )
+
+    # SAFETY: base_dir validated above, task_count is int - safe for shell command
     # Create task subdirectories
     task_dirs = " ".join(f"/data/{base_dir}/task-{i}" for i in range(task_count))
 

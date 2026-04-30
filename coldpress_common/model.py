@@ -39,6 +39,7 @@ when the YAML structure is invalid, making it easy to catch configuration errors
 early rather than during job execution.
 """
 
+import re
 from typing import Any, Literal, Optional, Union
 from pydantic import (
     BaseModel,
@@ -484,8 +485,6 @@ def validate_kubernetes_name(name: str, max_length: int = 253) -> str:
     Raises:
         ValueError: If the name is invalid
     """
-    import re
-
     if not name:
         raise ValueError("Resource name cannot be empty")
 

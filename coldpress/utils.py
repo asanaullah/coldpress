@@ -11,6 +11,9 @@ import copy
 import sys
 import yaml
 
+# Security: Dangerous shell metacharacters that could enable injection
+DANGEROUS_SHELL_CHARS = ["`", "$", "|", ";", "&", ">", "<", "\n", "\r"]
+
 
 def sanitize_value(value: str, context: str = "") -> str:
     """
@@ -30,8 +33,7 @@ def sanitize_value(value: str, context: str = "") -> str:
         return str(value)
 
     # Check for shell metacharacters that could be dangerous in args
-    dangerous_chars = ["`", "$", "|", ";", "&", ">", "<", "\n", "\r"]
-    for char in dangerous_chars:
+    for char in DANGEROUS_SHELL_CHARS:
         if char in value:
             raise ValueError(
                 f"Invalid character '{char}' in value '{value}'{context}. "
@@ -294,6 +296,118 @@ def apply_env_overrides(container: dict, task_intent, macros: dict[str, str]) ->
     container["env"] = env_list
 
 
+def get_storage_pvc_name(project_config: dict, namespace: str) -> str:
+    """
+    Get storage PVC name from project config with fallback.
+
+    Uses the fallback chain: project config > default PVC name.
+
+    Args:
+        project_config: Project configuration dict
+        namespace: Target namespace
+
+    Returns:
+        PVC name for storage
+    """
+    from .constants import get_pvc_name
+
+    # Storage is validated by Pydantic - if present, 'results' is required
+    storage = project_config.get("storage")
+    if storage:
+        return storage["results"]
+    else:
+        return get_pvc_name(namespace)
+
+
+def parse_discovery_config(intent_config):
+    """
+    Extract discovery template path and task names from intent config.
+
+    Args:
+        intent_config: Validated IntentConfig object
+
+    Returns:
+        tuple: (discovery_template_path, discovery_task_names)
+            - discovery_template_path: Full path to discovery template YAML, or None
+            - discovery_task_names: Set of task names that should run discovery
+    """
+    from .constants import DEFAULT_DISCOVERY_DIR
+
+    discovery_template_path = None
+    discovery_task_names = set()
+
+    if intent_config.discovery:
+        discovery_config = intent_config.discovery
+        template_name = (
+            discovery_config.template
+            if hasattr(discovery_config, "template")
+            else discovery_config
+        )
+
+        # Resolve template path
+        discovery_dir = os.getenv("COLDPRESS_DISCOVERY_DIR", DEFAULT_DISCOVERY_DIR)
+        discovery_template_path = os.path.join(discovery_dir, f"{template_name}.yaml")
+
+        # Determine which tasks should run discovery
+        discovery_tasks = (
+            discovery_config.tasks if hasattr(discovery_config, "tasks") else "all"
+        )
+
+        if discovery_tasks == "all":
+            discovery_task_names = {task.name for task in intent_config.tasks}
+        elif isinstance(discovery_tasks, list):
+            # discovery_tasks is a list of task names
+            discovery_task_names = set(discovery_tasks)
+
+    return discovery_template_path, discovery_task_names
+
+
+def extract_configmap_name(manifest: dict, manifest_type: str) -> str | None:
+    """
+    Extract ConfigMap name from a manifest.
+
+    Args:
+        manifest: The manifest dict (JobSet, PyTorchJob, RayJob, etc.)
+        manifest_type: Type of manifest ("jobset", "pytorchjob", "rayjob", etc.)
+
+    Returns:
+        ConfigMap name if found, None otherwise
+    """
+    if manifest_type == "jobset":
+        # Search for configMap volumes in JobSet manifest
+        for replicated_job in manifest.get("spec", {}).get("replicatedJobs", []):
+            job_template = (
+                replicated_job.get("template", {}).get("spec", {}).get("template", {})
+            )
+            volumes = job_template.get("spec", {}).get("volumes", [])
+            for volume in volumes:
+                if "configMap" in volume:
+                    return volume["configMap"]["name"]
+
+    elif manifest_type == "pytorchjob":
+        # Search for configMap volumes in PyTorchJob manifest
+        replica_specs = manifest.get("spec", {}).get("pytorchReplicaSpecs", {})
+        for replica_spec in replica_specs.values():
+            volumes = (
+                replica_spec.get("template", {}).get("spec", {}).get("volumes", [])
+            )
+            for volume in volumes:
+                if "configMap" in volume:
+                    return volume["configMap"]["name"]
+
+    elif manifest_type == "rayjob":
+        # Search for configMap volumes in RayJob manifest (head group)
+        head_spec = (
+            manifest.get("spec", {}).get("rayClusterSpec", {}).get("headGroupSpec", {})
+        )
+        volumes = head_spec.get("template", {}).get("spec", {}).get("volumes", [])
+        for volume in volumes:
+            if "configMap" in volume:
+                return volume["configMap"]["name"]
+
+    return None
+
+
 def build_discovery_init_container(
     template_path: str,
     base_dir: str,
@@ -324,9 +438,13 @@ def build_discovery_init_container(
         if not containers:
             return None
 
-        # Get template name from filename
+        # Get template name from filename and sanitize for shell use
         template_name = (
             os.path.basename(template_path).replace(".yaml", "").replace(".yml", "")
+        )
+        # Sanitize template_name to prevent command injection
+        sanitized_template_name = sanitize_value(
+            template_name, " for discovery template"
         )
 
         # Copy container and modify for init container use
@@ -351,10 +469,11 @@ def build_discovery_init_container(
         ]
 
         # Add rename command to output discovery_{template_name}.json
+        # SAFETY: sanitized_template_name validated above to prevent shell injection
         original_command = (
             container.get("args", [""])[0] if container.get("args") else ""
         )
-        rename_cmd = f"\nif [ -f /tmp/result/discovery.json ]; then mv /tmp/result/discovery.json /tmp/result/discovery_{template_name}.json; fi"
+        rename_cmd = f"\nif [ -f /tmp/result/discovery.json ]; then mv /tmp/result/discovery.json /tmp/result/discovery_{sanitized_template_name}.json; fi"
 
         if container.get("args"):
             container["args"] = [original_command + rename_cmd]

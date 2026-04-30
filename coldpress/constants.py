@@ -84,3 +84,15 @@ MANIFEST_CONFIG = {
         "apply_msg": "rayjob",
     },
 }
+
+# Backend display names
+BACKEND_NAME_MAP = {
+    "kubeflow": "Kubeflow",
+    "kserve": "KServe",
+    "kuberay": "KubeRay",
+    "jobset": "JobSet",
+}
+
+# Default directories (fallback values when env vars not set)
+DEFAULT_PROJECT_DIR = "projects"
+DEFAULT_OUTPUT_DIR = "output"
