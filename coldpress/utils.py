@@ -14,6 +14,9 @@ import yaml
 # Security: Dangerous shell metacharacters that could enable injection
 DANGEROUS_SHELL_CHARS = ["`", "$", "|", ";", "&", ">", "<", "\n", "\r"]
 
+# Discovery container mount path (Kubernetes volume mount point)
+DISCOVERY_MOUNT_PATH = "/tmp/result"
+
 
 def sanitize_value(value: str, context: str = "") -> str:
     """
@@ -504,8 +507,10 @@ else
 fi
 mkdir -p $DISCOVERY_DIR && cd $DISCOVERY_DIR && """
 
-            # Replace /tmp/result references with current directory
-            modified_command = original_command.replace("/tmp/result/", "./")
+            # Replace discovery mount path references with current directory
+            modified_command = original_command.replace(
+                f"{DISCOVERY_MOUNT_PATH}/", "./"
+            )
             # Update final rename command
             rename_cmd = f"\nif [ -f ./discovery.json ]; then mv ./discovery.json ./discovery_{sanitized_template_name}.json; fi"
 
@@ -525,7 +530,7 @@ mkdir -p $DISCOVERY_DIR && cd $DISCOVERY_DIR && """
             container["volumeMounts"] = [
                 {
                     "name": storage_volume_name,
-                    "mountPath": "/tmp/result",
+                    "mountPath": DISCOVERY_MOUNT_PATH,
                     "subPath": result_path,
                 }
             ]
@@ -535,7 +540,7 @@ mkdir -p $DISCOVERY_DIR && cd $DISCOVERY_DIR && """
             original_command = (
                 container.get("args", [""])[0] if container.get("args") else ""
             )
-            rename_cmd = f"\nif [ -f /tmp/result/discovery.json ]; then mv /tmp/result/discovery.json /tmp/result/discovery_{sanitized_template_name}.json; fi"
+            rename_cmd = f"\nif [ -f {DISCOVERY_MOUNT_PATH}/discovery.json ]; then mv {DISCOVERY_MOUNT_PATH}/discovery.json {DISCOVERY_MOUNT_PATH}/discovery_{sanitized_template_name}.json; fi"
 
             if container.get("args"):
                 container["args"] = [original_command + rename_cmd]
