@@ -1,6 +1,6 @@
 # Coldpress
 
-[![Tests](https://github.com/asanaullah/coldpress/workflows/Tests/badge.svg?branch=v0.2)](https://github.com/asanaullah/coldpress/actions/workflows/tests.yml)
+[![Tests](https://github.com/asanaullah/coldpress/workflows/Tests/badge.svg?branch=0.3.0)](https://github.com/asanaullah/coldpress/actions/workflows/tests.yml)
 
 Coldpress is a prescriptive manifest generator that reduces the effort and expertise needed to deploy complex AI/HPC workloads on Kubernetes clusters.
 
@@ -388,7 +388,7 @@ Macros are placeholders in your job-spec.yaml that Coldpress automatically fills
 |-------|-------------|---------|
 | `${REPLICA_<taskname>_0}` | Pod DNS of replica 0 of named task | `${REPLICA_inference-server_0}` |
 | `${REPLICA_<taskname>_1}` | Pod DNS of replica 1 of named task | `${REPLICA_ddp-training_1}` |
-| `${SERVICE_<taskname>}` | Service DNS for named task (if task has ports) | `${SERVICE_inference-server}` |
+| `${REPLICAS_ALL}` | Space-separated list of all replica DNS names across all tasks | Used for collective communication |
 
 #### Usage Examples
 
@@ -405,23 +405,20 @@ tasks:
 
 **Multi-Task Client-Server:**
 ```yaml
-# job-spec.yaml
----
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: inference-server
-spec:
-  template:
-    spec:
-      containers:
-        - name: server
-          ports:
-            - containerPort: 8000
-          env:
-            - name: VLLM_PORT
-              value: "8000"
+# intent.yaml
+tasks:
+  - name: inference-server
+    replicas: 1
+  
+  - name: benchmark-client
+    replicas: 1
+    depends_on:
+      task: inference-server
+      wait_for: ready
+    args:
+      target: "http://${REPLICA_inference-server_0}:8000"
 
+# job-spec.yaml (client container receives resolved target)
 ---
 apiVersion: batch/v1
 kind: Job
@@ -432,9 +429,11 @@ spec:
     spec:
       containers:
         - name: client
-          env:
-            - name: GUIDELLM_TARGET
-              value: "${SERVICE_inference-server}"  # Resolved automatically
+          command:
+            - guidellm
+            - benchmark
+            - run
+            - --target=${TARGET}  # Replaced with http://coldpress-...-0-0....svc.cluster.local:8000
 ```
 
 ## Examples
@@ -503,8 +502,8 @@ cd output/vllm-benchmark-job/
 
 **What it demonstrates:**
 - Task dependencies (`wait_for: ready`)
-- Service discovery via `${SERVICE_*}` macros
-- Automatic service creation for tasks with ports
+- Cross-task pod DNS resolution via `${REPLICA_*}` macros
+- Automatic DNS service creation by JobSet
 - Client waits for server readiness before starting
 
 **Comparison with manual approach:**
@@ -534,6 +533,9 @@ Comprehensive test suite validates:
 - Standard Kubernetes labels (`test_labels.py`)
 - Security and input validation (`test_security.py`)
 - Error handling (`test_error_handling.py`)
+- RoCE feature detection (`test_roce_disabled.py`)
+- Namespace consistency (`test_namespace_consistency.py`)
+- Script generation security (`test_script_gen_security.py`)
 - Exit codes (`test_exit_codes.sh`)
 
 **Run all tests:**
@@ -563,9 +565,7 @@ coldpress/
 ├── examples/               # Example workloads (intent.yaml + job-spec.yaml)
 ├── cluster/                # Example cluster-wide configurations
 ├── users/                  # Example user RBAC configurations
-├── docs/                   # Documentation (CHANGELOG, quickstart guides)
 ├── pyproject.toml          # Package configuration (modern Python packaging)
-├── setup.py                # Package setup (legacy, for backward compatibility)
 └── setup-env.sh            # Environment setup script
 ```
 
@@ -616,7 +616,7 @@ coldpress-setup generate project coldpress-project.yaml
 All generated resources include standard Kubernetes labels for easy querying and management:
 
 - `app.kubernetes.io/managed-by: coldpress` - Identifies all Coldpress-managed resources
-- `app.kubernetes.io/version: 0.2.1` - Tracks Coldpress version
+- `app.kubernetes.io/version: 0.3.0` - Tracks Coldpress version
 - `coldpress.io/job-id: {job_name}` - Job-specific identifier for compute resources
 
 **Query all Coldpress resources:**

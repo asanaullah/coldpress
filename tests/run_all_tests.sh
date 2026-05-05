@@ -45,6 +45,8 @@ run_test "Label Tests" "python tests/test_labels.py"
 run_test "Security Tests" "python tests/test_security.py"
 run_test "Error Handling Tests" "python tests/test_error_handling.py"
 run_test "RoCE Disabled Tests" "python tests/test_roce_disabled.py"
+run_test "Namespace Consistency Tests" "python tests/test_namespace_consistency.py"
+run_test "Script Generation Security Tests" "python tests/test_script_gen_security.py"
 run_test "Exit Code Tests" "bash tests/test_exit_codes.sh"
 
 # Summary
