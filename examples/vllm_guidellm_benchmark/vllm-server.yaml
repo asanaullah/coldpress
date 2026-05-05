@@ -1,0 +1,57 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vllm-inference-server
+  namespace: coldpress-project
+spec:
+  template:
+    metadata:
+      labels:
+        app: vllm-server
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: server
+          image: nvcr.io/nvidia/vllm:26.03-py3
+          command: ["bash", "-c"]
+          args:
+            - |
+              python -m vllm.entrypoints.openai.api_server \
+                --model="${VLLM_MODEL}" \
+                --port="${VLLM_PORT}" \
+                --max-model-len="${VLLM_MAX_MODEL_LEN}" \
+                --gpu-memory-utilization="${VLLM_GPU_MEMORY_UTIL}"
+          env:
+            - name: HOME
+              value: /tmp
+            - name: VLLM_MODEL
+              value: "ibm-granite/granite-3.3-8b-instruct"
+            - name: VLLM_PORT
+              value: "8000"
+            - name: VLLM_MAX_MODEL_LEN
+              value: "10000"
+            - name: VLLM_GPU_MEMORY_UTIL
+              value: "0.6"
+          ports:
+            - containerPort: 8000
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: coldpress-project-storage

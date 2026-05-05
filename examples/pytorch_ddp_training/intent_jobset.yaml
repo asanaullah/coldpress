@@ -1,0 +1,33 @@
+project: coldpress-project
+output: ddp-training-job
+target: jobset
+
+files:
+  - train.py
+
+discovery:
+  template: user_snapshot
+  tasks: all
+
+tasks:
+  - name: ddp-training
+    replicas: 2
+
+    args:
+
+      # Positioned insertion: new args with insert_after
+      nnodes:
+        value: "${REPLICAS}"
+        insert_after: nproc_per_node
+
+      node_rank:
+        value: "${INDEX}"
+        insert_after: nnodes
+
+      master_addr:
+        value: "${REPLICA_ddp-training_0}"
+        insert_after: node_rank
+
+      master_port:
+        value: "29500"
+        insert_after: master_addr

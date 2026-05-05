@@ -1,0 +1,456 @@
+# Assisted by: Claude Sonnet 4.5
+"""JobSet generation from vanilla k8s Jobs + intent.yaml.
+
+Generates JobSet manifests directly from:
+- Vanilla Kubernetes Job manifests (job-spec.yaml)
+- Intent specifications (intent.yaml)
+
+Direct transformation from vk8s to JobSet with no intermediate formats.
+"""
+
+import copy
+import yaml
+from datetime import datetime, timezone
+from .constants import (
+    COLDPRESS_LABELS,
+    MKDIR_IMAGE,
+    get_kueue_queue_label,
+    get_jobset_name,
+)
+from .utils import (
+    substitute_macros,
+    apply_arg_overrides,
+    apply_env_overrides,
+    build_discovery_init_container,
+    parse_discovery_config,
+    get_storage_pvc_name,
+    DANGEROUS_SHELL_CHARS,
+)
+
+
+def build_replica_macros(
+    task_name: str,
+    replica_index: int,
+    total_replicas: int,
+    node_id: int | None,
+    jobset_name: str,
+    namespace: str,
+) -> dict[str, str]:
+    """Build macro substitution dict for a replica."""
+    macros = {
+        "INDEX": str(replica_index),
+        "REPLICAS": str(total_replicas),
+        "TASK_NAME": task_name,
+    }
+
+    if node_id is not None:
+        macros["NODE_ID"] = str(node_id)
+
+    # REPLICA_N macros - full JobSet DNS
+    for i in range(total_replicas):
+        macros[f"REPLICA_{i}"] = (
+            f"{jobset_name}-{task_name}-{i}-0.{jobset_name}-{task_name}.{namespace}.svc.cluster.local"
+        )
+
+    # REPLICAS_ALL
+    all_replicas = ",".join(
+        f"{jobset_name}-{task_name}-{i}-0" for i in range(total_replicas)
+    )
+    macros["REPLICAS_ALL"] = all_replicas
+
+    return macros
+
+
+def generate_jobset_from_intent(
+    vk8s_jobs: dict, intent_config, project_config, namespace: str
+):
+    """
+    Generate JobSet manifest from vanilla k8s Jobs + intent.
+
+    Args:
+        vk8s_jobs: Dict mapping job name to vanilla k8s Job manifest
+        intent_config: Validated IntentConfig object
+        project_config: Project configuration dict
+        namespace: Target namespace
+
+    Returns:
+        tuple: (JobSet manifest, services list, base_dir)
+    """
+    # Determine job/jobset name
+    if len(intent_config.tasks) == 1:
+        job_id = intent_config.tasks[0].name
+    else:
+        job_id = f"{intent_config.tasks[0].name}-workflow"
+
+    jobset_name = get_jobset_name(job_id)
+    data_pvc_name = get_storage_pvc_name(project_config, namespace)
+
+    # Generate base directory for results
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    short_hash = abs(hash(jobset_name + timestamp)) % 100000000
+    base_dir = f"{namespace}/coldpress_results/{job_id}-{short_hash:08x}-{timestamp}"
+
+    # Extract discovery configuration
+    discovery_template_path, discovery_task_names = parse_discovery_config(
+        intent_config
+    )
+
+    # Build replicated jobs
+    replicated_jobs = []
+    task_counter = 0
+
+    # Pre-scan tasks to build task-qualified REPLICA macros
+    # Maps REPLICA_taskname_N -> pod DNS for all tasks
+    task_replica_macros = {}
+    temp_task_counter = 0
+
+    for task_intent in intent_config.tasks:
+        task_name = task_intent.name
+        replicas = task_intent.replicas or 1
+
+        # Build task-qualified REPLICA macros for this task
+        for i in range(replicas):
+            replica_job_name = f"task-{temp_task_counter + i}"
+            pod_dns = f"{jobset_name}-{replica_job_name}-0-0.{jobset_name}.{namespace}.svc.cluster.local"
+            task_replica_macros[f"REPLICA_{task_name}_{i}"] = pod_dns
+
+        temp_task_counter += replicas
+
+    # Create mkdir init job
+    task_count = sum(task.replicas or 1 for task in intent_config.tasks)
+    mkdir_job = build_mkdir_job(base_dir, data_pvc_name, task_count, namespace)
+    replicated_jobs.append(mkdir_job)
+
+    previous_job_name = "mkdir"
+    previous_blocking_type = "completion"
+
+    for task_intent in intent_config.tasks:
+        task_name = task_intent.name
+
+        if task_name not in vk8s_jobs:
+            raise ValueError(f"Task '{task_name}' not found in job-spec.yaml")
+
+        vk8s_job = vk8s_jobs[task_name]
+        replicas = task_intent.replicas or 1
+
+        # For multi-replica tasks (like DDP), all replicas should depend on mkdir
+        # and run in parallel, not sequentially
+        task_dependency_job = previous_job_name
+        task_dependency_type = previous_blocking_type
+
+        # Build list of replicated job names for this task
+        replica_job_names = [f"task-{task_counter + i}" for i in range(replicas)]
+
+        for replica_idx in range(replicas):
+            # Build macros for this replica using actual replicated job names
+            nodes = task_intent.nodes
+            node_id = nodes[replica_idx] if nodes else None
+
+            # Build macros with actual JobSet DNS names
+            macros = {
+                "INDEX": str(replica_idx),
+                "REPLICAS": str(replicas),
+                "TASK_NAME": task_name,
+            }
+
+            if node_id is not None:
+                macros["NODE_ID"] = str(node_id)
+
+            # REPLICA_N macros - use actual replicated job names
+            for i in range(replicas):
+                replica_job_name = replica_job_names[i]
+                # JobSet DNS format: {jobset-name}-{replicated-job-name}-{job-index}-{completion-index}.{subdomain}.{namespace}.svc.cluster.local
+                macros[f"REPLICA_{i}"] = (
+                    f"{jobset_name}-{replica_job_name}-0-0.{jobset_name}.{namespace}.svc.cluster.local"
+                )
+
+            # REPLICAS_ALL
+            all_replicas = ",".join(
+                f"{jobset_name}-{rjn}-0-0" for rjn in replica_job_names
+            )
+            macros["REPLICAS_ALL"] = all_replicas
+
+            # Add task-qualified REPLICA macros for all tasks
+            macros.update(task_replica_macros)
+
+            # Determine if this task should run discovery
+            should_run_discovery = (
+                discovery_template_path and task_name in discovery_task_names
+            )
+
+            # Transform vk8s Job to JobSet replicated job
+            # All replicas of the same task share the same dependency
+            replicated_job = build_replicated_job_from_vk8s(
+                vk8s_job,
+                task_intent,
+                replica_idx,
+                macros,
+                task_counter,
+                jobset_name,
+                namespace,
+                data_pvc_name,
+                base_dir,
+                task_dependency_job,  # All replicas depend on the same previous job
+                task_dependency_type,
+                discovery_template_path if should_run_discovery else None,
+            )
+
+            replicated_jobs.append(replicated_job)
+
+            task_counter += 1
+
+        # After all replicas of this task, update previous for next task
+        # Next task depends on the last replica of current task
+        previous_job_name = replicated_jobs[-1]["name"]
+        # Determine blocking type from readiness probe
+        vk8s_spec = vk8s_job.get("spec", {}).get("template", {}).get("spec", {})
+        containers = vk8s_spec.get("containers", [])
+        has_readiness = containers and containers[0].get("readinessProbe")
+        previous_blocking_type = "endpoint" if has_readiness else "completion"
+
+    # Determine driver jobs (non-endpoint tasks)
+    driver_jobs = [
+        job["name"]
+        for job in replicated_jobs
+        if job["name"] != "mkdir"  # Skip mkdir
+    ]
+
+    # Build JobSet spec
+    jobset_spec = {
+        "suspend": True,
+        "replicatedJobs": replicated_jobs,
+    }
+
+    if driver_jobs:
+        jobset_spec["successPolicy"] = {
+            "operator": "All",
+            "targetReplicatedJobs": driver_jobs,
+        }
+
+    # Build JobSet manifest
+    jobset_labels = COLDPRESS_LABELS.copy()
+    jobset_labels.update(
+        {
+            "kueue.x-k8s.io/queue-name": get_kueue_queue_label(namespace),
+            "coldpress.io/job-id": jobset_name,
+        }
+    )
+
+    jobset = {
+        "apiVersion": "jobset.x-k8s.io/v1alpha2",
+        "kind": "JobSet",
+        "metadata": {
+            "name": jobset_name,
+            "namespace": namespace,
+            "labels": jobset_labels,
+            "annotations": {
+                "coldpress.io/base-dir": base_dir,
+                "coldpress.io/storage-pvc": data_pvc_name,
+            },
+        },
+        "spec": jobset_spec,
+    }
+
+    # Services are no longer generated - JobSet provides automatic DNS
+    return jobset, [], base_dir
+
+
+def build_mkdir_job(
+    base_dir: str, pvc_name: str, task_count: int, namespace: str
+) -> dict:
+    """Build mkdir initialization job."""
+    # Validate base_dir contains no shell metacharacters (defense in depth)
+    for char in DANGEROUS_SHELL_CHARS:
+        if char in base_dir:
+            raise ValueError(
+                f"Invalid character '{char}' in base_dir '{base_dir}'. "
+                f"This could be a security risk."
+            )
+
+    # SAFETY: base_dir validated above, task_count is int - safe for shell command
+    # Create task subdirectories
+    task_dirs = " ".join(f"/data/{base_dir}/task-{i}" for i in range(task_count))
+
+    return {
+        "name": "mkdir",
+        "replicas": 1,
+        "template": {
+            "spec": {
+                "parallelism": 1,
+                "completions": 1,
+                "backoffLimit": 0,
+                "template": {
+                    "metadata": {"labels": {"app": "mkdir"}},
+                    "spec": {
+                        "restartPolicy": "Never",
+                        "containers": [
+                            {
+                                "name": "mkdir",
+                                "image": MKDIR_IMAGE,
+                                "command": ["sh", "-c"],
+                                "args": [
+                                    f"mkdir -p /data/{base_dir} {task_dirs} && "
+                                    f"echo Created directory /data/{base_dir} with {task_count} task subdirectories"
+                                ],
+                                "volumeMounts": [
+                                    {"name": "storage", "mountPath": "/data"}
+                                ],
+                            }
+                        ],
+                        "volumes": [
+                            {
+                                "name": "storage",
+                                "persistentVolumeClaim": {"claimName": pvc_name},
+                            }
+                        ],
+                    },
+                },
+            },
+        },
+    }
+
+
+def build_replicated_job_from_vk8s(
+    vk8s_job: dict,
+    task_intent,
+    replica_idx: int,
+    macros: dict,
+    task_counter: int,
+    jobset_name: str,
+    namespace: str,
+    pvc_name: str,
+    base_dir: str,
+    previous_job_name: str,
+    previous_blocking_type: str,
+    discovery_template_path: str = None,
+):
+    """Build a JobSet replicated job from a vanilla k8s Job."""
+    # Extract vk8s Job spec
+    vk8s_spec = vk8s_job.get("spec", {}).get("template", {}).get("spec", {})
+    containers = vk8s_spec.get("containers", [])
+
+    if not containers:
+        raise ValueError(
+            f"Job {vk8s_job.get('metadata', {}).get('name')} has no containers"
+        )
+
+    container = copy.deepcopy(containers[0])
+
+    # Substitute macros in existing env vars from job-spec
+    if container.get("env"):
+        for env_item in container["env"]:
+            if "value" in env_item and isinstance(env_item["value"], str):
+                context = f" for env var '{env_item['name']}'"
+                env_item["value"] = substitute_macros(
+                    env_item["value"], macros, context
+                )
+
+    # Apply arg and env var replacements using shared utilities
+    apply_arg_overrides(container, task_intent, macros)
+    apply_env_overrides(container, task_intent, macros)
+
+    # Build pod spec
+    pod_spec = {
+        "restartPolicy": "Never",
+        "containers": [container],
+    }
+
+    # Copy tolerations
+    if vk8s_spec.get("tolerations"):
+        pod_spec["tolerations"] = vk8s_spec["tolerations"]
+
+    # Copy volumes and add coldpress- prefix to configMap names
+    if vk8s_spec.get("volumes"):
+        pod_spec["volumes"] = copy.deepcopy(vk8s_spec["volumes"])
+        # Add coldpress- prefix to configMap volume names
+        for volume in pod_spec["volumes"]:
+            if "configMap" in volume:
+                cm_name = volume["configMap"]["name"]
+                if not cm_name.startswith("coldpress-"):
+                    volume["configMap"]["name"] = f"coldpress-{cm_name}"
+
+    # Find storage volume name for discovery init container
+    storage_volume_name = None
+    if vk8s_spec.get("volumes"):
+        for volume in vk8s_spec["volumes"]:
+            if "persistentVolumeClaim" in volume:
+                pvc_claim = volume["persistentVolumeClaim"].get("claimName")
+                if pvc_claim == pvc_name:
+                    storage_volume_name = volume.get("name")
+                    break
+
+    # Add discovery init container if specified
+    if discovery_template_path and storage_volume_name:
+        discovery_init = build_discovery_init_container(
+            discovery_template_path, base_dir, storage_volume_name, task_counter
+        )
+        if discovery_init:
+            pod_spec["initContainers"] = [discovery_init]
+
+    # Transform volumeMounts to add subPath for PVC mounts pointing to task directory
+    if container.get("volumeMounts"):
+        volume_mounts = copy.deepcopy(container["volumeMounts"])
+        task_subdir = f"{base_dir}/task-{task_counter}"
+
+        # Find which volumes are PVCs using the storage PVC
+        pvc_volume_names = []
+        if vk8s_spec.get("volumes"):
+            for volume in vk8s_spec["volumes"]:
+                if "persistentVolumeClaim" in volume:
+                    pvc_claim = volume["persistentVolumeClaim"].get("claimName")
+                    if pvc_claim == pvc_name:
+                        pvc_volume_names.append(volume.get("name"))
+
+        # Add subPath to volumeMounts that reference the storage PVC
+        for mount in volume_mounts:
+            if mount.get("name") in pvc_volume_names and not mount.get("subPath"):
+                # Add subPath to mount at task-specific directory created by mkdir
+                mount["subPath"] = task_subdir
+
+        container["volumeMounts"] = volume_mounts
+
+    # Build replicated job
+    replicated_job = {
+        "name": f"task-{task_counter}",
+        "replicas": 1,
+        "template": {
+            "spec": {
+                "parallelism": 1,
+                "completions": 1,
+                "backoffLimit": 0,
+                "template": {
+                    "metadata": {
+                        "labels": {
+                            "app": f"task-{task_counter}",
+                            "coldpress/gid": jobset_name,
+                        },
+                    },
+                    "spec": pod_spec,
+                },
+            },
+        },
+    }
+
+    # Add dependency
+    if previous_job_name:
+        dependency_status = (
+            "Ready" if previous_blocking_type == "endpoint" else "Complete"
+        )
+        replicated_job["dependsOn"] = [
+            {"name": previous_job_name, "status": dependency_status}
+        ]
+
+    # JobSet provides automatic DNS service - no need to create additional services
+    return replicated_job
+
+
+def jobset_to_yaml(jobset: dict) -> str:
+    """Convert JobSet dict to YAML string."""
+
+    return yaml.safe_dump(jobset, default_flow_style=False, sort_keys=False)
+
+
+def services_to_yaml(services: list) -> str:
+    """Convert Services list to YAML string."""
+
+    return yaml.safe_dump_all(services, default_flow_style=False, sort_keys=False)

@@ -1,0 +1,370 @@
+# Assisted by: Claude Sonnet 4.5
+"""Kubeflow manifest generation for Coldpress jobs."""
+
+import copy
+import yaml
+from datetime import datetime, timezone
+
+from .constants import (
+    COLDPRESS_LABELS,
+    MKDIR_IMAGE,
+    get_kueue_queue_label,
+)
+from .utils import (
+    apply_arg_overrides,
+    apply_env_overrides,
+    build_discovery_init_container,
+    parse_discovery_config,
+    get_storage_pvc_name,
+    DANGEROUS_SHELL_CHARS,
+)
+
+
+def generate_inferenceservice_from_intent(
+    vk8s_jobs: dict, intent_config, project_config, namespace: str
+):
+    """
+    Generate KServe InferenceService manifest from vanilla k8s Jobs + intent.
+
+    Args:
+        vk8s_jobs: Dict mapping job name to vanilla k8s Job manifest
+        intent_config: Validated IntentConfig object
+        project_config: Project configuration dict
+        namespace: Target namespace
+
+    Returns:
+        tuple: (InferenceService manifest, base_dir)
+    """
+    # Only support single task for KServe
+    if len(intent_config.tasks) != 1:
+        raise ValueError("KServe generation currently only supports single task")
+
+    task_intent = intent_config.tasks[0]
+    task_name = task_intent.name
+
+    if task_name not in vk8s_jobs:
+        raise ValueError(f"Task '{task_name}' not found in job-spec.yaml")
+
+    vk8s_job = vk8s_jobs[task_name]
+
+    # Determine job name
+    job_id = task_name
+    inferenceservice_name = f"coldpress-{job_id}"
+
+    data_pvc_name = get_storage_pvc_name(project_config, namespace)
+
+    # Generate base directory for results/logs
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    short_hash = abs(hash(inferenceservice_name + timestamp)) % 100000000
+    base_dir = f"{namespace}/coldpress_results/{job_id}-{short_hash:08x}-{timestamp}"
+
+    # Extract vk8s Job spec
+    vk8s_spec = vk8s_job.get("spec", {}).get("template", {}).get("spec", {})
+    containers = vk8s_spec.get("containers", [])
+
+    if not containers:
+        raise ValueError(
+            f"Job {vk8s_job.get('metadata', {}).get('name')} has no containers"
+        )
+
+    container = copy.deepcopy(containers[0])
+
+    # KServe requires specific container name
+    container["name"] = "kserve-container"
+
+    # Get replicas (for autoscaling configuration)
+    replicas = task_intent.replicas or 1
+
+    # KServe macros
+    macros = {
+        "REPLICAS": str(replicas),
+        "TASK_NAME": task_name,
+    }
+
+    # Apply arg and env var replacements using shared utilities
+    apply_arg_overrides(container, task_intent, macros)
+    apply_env_overrides(container, task_intent, macros)
+
+    # Extract ports from container spec
+    container.get("ports", [])
+
+    # Build predictor spec with custom container
+    predictor = {"containers": [container]}
+
+    # Copy volumes if present
+    if vk8s_spec.get("volumes"):
+        predictor["volumes"] = copy.deepcopy(vk8s_spec["volumes"])
+        # Add coldpress- prefix to configMap volume names
+        for volume in predictor["volumes"]:
+            if "configMap" in volume:
+                cm_name = volume["configMap"]["name"]
+                if not cm_name.startswith("coldpress-"):
+                    volume["configMap"]["name"] = f"coldpress-{cm_name}"
+
+    # Copy tolerations if present
+    if vk8s_spec.get("tolerations"):
+        predictor["tolerations"] = vk8s_spec["tolerations"]
+
+    # Add node selector if specified
+    node_id = task_intent.nodes[0] if task_intent.nodes else None
+    if node_id and node_id != "any":
+        predictor["nodeSelector"] = {"coldpress.node": str(node_id)}
+
+    # Build InferenceService labels
+    inferenceservice_labels = COLDPRESS_LABELS.copy()
+    inferenceservice_labels.update(
+        {
+            "coldpress.io/job-id": inferenceservice_name,
+            "kueue.x-k8s.io/queue-name": get_kueue_queue_label(namespace),
+        }
+    )
+
+    # Build InferenceService annotations
+    annotations = {
+        "coldpress.io/base-dir": base_dir,
+        "coldpress.io/storage-pvc": data_pvc_name,
+        "serving.kserve.io/deploymentMode": "RawDeployment",  # Use raw K8s deployment for more control
+    }
+
+    # Add autoscaling annotations if replicas specified
+    if replicas > 1:
+        annotations["serving.kserve.io/autoscalerClass"] = "hpa"
+        annotations["serving.kserve.io/minReplicas"] = "1"
+        annotations["serving.kserve.io/maxReplicas"] = str(replicas)
+
+    # Build InferenceService manifest
+    inferenceservice = {
+        "apiVersion": "serving.kserve.io/v1beta1",
+        "kind": "InferenceService",
+        "metadata": {
+            "name": inferenceservice_name,
+            "namespace": namespace,
+            "labels": inferenceservice_labels,
+            "annotations": annotations,
+        },
+        "spec": {"predictor": predictor},
+    }
+
+    return inferenceservice, base_dir
+
+
+def kubeflow_to_yaml(manifest):
+    """Convert Kubeflow manifest dict to YAML string.
+
+    Args:
+        manifest: Kubeflow manifest dict
+
+    Returns:
+        str: YAML string
+    """
+    return yaml.safe_dump(manifest, default_flow_style=False, sort_keys=False)
+
+
+def generate_pytorchjob_from_intent(
+    vk8s_jobs: dict, intent_config, project_config, namespace: str
+):
+    """
+    Generate PyTorchJob manifest from vanilla k8s Jobs + intent.
+
+    Args:
+        vk8s_jobs: Dict mapping job name to vanilla k8s Job manifest
+        intent_config: Validated IntentConfig object
+        project_config: Project configuration dict
+        namespace: Target namespace
+
+    Returns:
+        tuple: (PyTorchJob manifest, base_dir)
+    """
+    # Only support single task for Kubeflow
+    if len(intent_config.tasks) != 1:
+        raise ValueError("Kubeflow generation currently only supports single task")
+
+    task_intent = intent_config.tasks[0]
+    task_name = task_intent.name
+
+    if task_name not in vk8s_jobs:
+        raise ValueError(f"Task '{task_name}' not found in job-spec.yaml")
+
+    vk8s_job = vk8s_jobs[task_name]
+
+    # Determine job name
+    job_id = task_name
+    pytorchjob_name = f"coldpress-{job_id}"
+
+    data_pvc_name = get_storage_pvc_name(project_config, namespace)
+
+    # Generate base directory for results
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    short_hash = abs(hash(pytorchjob_name + timestamp)) % 100000000
+    base_dir = f"{namespace}/coldpress_results/{job_id}-{short_hash:08x}-{timestamp}"
+
+    # Extract discovery configuration
+    discovery_template_path, discovery_task_names = parse_discovery_config(
+        intent_config
+    )
+
+    # Extract vk8s Job spec
+    vk8s_spec = vk8s_job.get("spec", {}).get("template", {}).get("spec", {})
+    containers = vk8s_spec.get("containers", [])
+
+    if not containers:
+        raise ValueError(
+            f"Job {vk8s_job.get('metadata', {}).get('name')} has no containers"
+        )
+
+    container = copy.deepcopy(containers[0])
+
+    # Kubeflow requires container to be named "pytorch"
+    container["name"] = "pytorch"
+
+    # Get replicas (PyTorchJob workers)
+    replicas = task_intent.replicas or 1
+
+    # Kubeflow macros - simpler because PyTorchJob auto-injects env vars
+    macros = {
+        "REPLICAS": str(replicas),
+        "TASK_NAME": task_name,
+    }
+
+    # Apply arg and env var replacements using shared utilities
+    apply_arg_overrides(container, task_intent, macros)
+    apply_env_overrides(container, task_intent, macros)
+
+    # Add subPath to results volume mount in main container
+    if "volumeMounts" in container:
+        for volume_mount in container["volumeMounts"]:
+            if volume_mount.get("name") == "results":
+                volume_mount["subPath"] = base_dir
+
+    # Build pod spec
+    pod_spec = {
+        "restartPolicy": "OnFailure",
+        "containers": [container],
+    }
+
+    # Copy tolerations
+    if vk8s_spec.get("tolerations"):
+        pod_spec["tolerations"] = vk8s_spec["tolerations"]
+
+    # Copy volumes and add coldpress- prefix to configMap names
+    if vk8s_spec.get("volumes"):
+        pod_spec["volumes"] = copy.deepcopy(vk8s_spec["volumes"])
+        # Add coldpress- prefix to configMap volume names
+        for volume in pod_spec["volumes"]:
+            if "configMap" in volume:
+                cm_name = volume["configMap"]["name"]
+                if not cm_name.startswith("coldpress-"):
+                    volume["configMap"]["name"] = f"coldpress-{cm_name}"
+
+    # Add storage PVC if not already present
+    if not any(v.get("name") == "results" for v in pod_spec.get("volumes", [])):
+        if "volumes" not in pod_spec:
+            pod_spec["volumes"] = []
+        pod_spec["volumes"].insert(
+            0,
+            {"name": "results", "persistentVolumeClaim": {"claimName": data_pvc_name}},
+        )
+
+    # Build init containers
+    init_containers = []
+
+    # Validate base_dir contains no shell metacharacters (defense in depth)
+    for char in DANGEROUS_SHELL_CHARS:
+        if char in base_dir:
+            raise ValueError(
+                f"Invalid character '{char}' in base_dir '{base_dir}'. "
+                f"This could be a security risk."
+            )
+
+    # Add mkdir init container
+    mkdir_init = {
+        "name": "mkdir",
+        "image": MKDIR_IMAGE,
+        "command": ["sh", "-c"],
+        "args": [
+            f"mkdir -p /results/{base_dir} && echo Created directory /results/{base_dir}"
+        ],
+        "volumeMounts": [{"name": "results", "mountPath": "/results"}],
+    }
+    init_containers.append(mkdir_init)
+
+    # Add discovery init container if specified
+    should_run_discovery = discovery_template_path and task_name in discovery_task_names
+
+    if should_run_discovery:
+        # Find storage volume name
+        storage_volume_name = None
+        for volume in pod_spec.get("volumes", []):
+            if "persistentVolumeClaim" in volume:
+                pvc_claim = volume["persistentVolumeClaim"].get("claimName")
+                if pvc_claim == data_pvc_name:
+                    storage_volume_name = volume.get("name")
+                    break
+
+        if storage_volume_name:
+            discovery_init = build_discovery_init_container(
+                discovery_template_path,
+                base_dir,
+                storage_volume_name,
+                task_id=None,
+                per_pod_directory=True,
+            )
+            if discovery_init:
+                init_containers.append(discovery_init)
+
+    pod_spec["initContainers"] = init_containers
+
+    # Build pod template
+    pod_template = {
+        "metadata": {
+            "annotations": {"sidecar.istio.io/inject": "false"},
+            "labels": COLDPRESS_LABELS.copy(),
+        },
+        "spec": pod_spec,
+    }
+    pod_template["metadata"]["labels"]["coldpress.io/job-id"] = pytorchjob_name
+
+    # Build PyTorchJob labels
+    pytorchjob_labels = COLDPRESS_LABELS.copy()
+    pytorchjob_labels.update(
+        {
+            "coldpress.io/job-id": pytorchjob_name,
+            "kueue.x-k8s.io/queue-name": get_kueue_queue_label(namespace),
+        }
+    )
+
+    # Build PyTorchJob manifest
+    pytorchjob = {
+        "apiVersion": "kubeflow.org/v1",
+        "kind": "PyTorchJob",
+        "metadata": {
+            "name": pytorchjob_name,
+            "namespace": namespace,
+            "labels": pytorchjob_labels,
+            "annotations": {
+                "coldpress.io/base-dir": base_dir,
+                "coldpress.io/storage-pvc": data_pvc_name,
+                "kueue.x-k8s.io/wait-for-pods-ready-timeout": "20m",
+            },
+        },
+        "spec": {
+            "suspend": True,  # Start suspended for Kueue
+            "pytorchReplicaSpecs": {
+                "Master": {
+                    "replicas": 1,
+                    "restartPolicy": "OnFailure",
+                    "template": pod_template,
+                }
+            },
+        },
+    }
+
+    # Add Worker replicas if more than 1 replica
+    if replicas > 1:
+        pytorchjob["spec"]["pytorchReplicaSpecs"]["Worker"] = {
+            "replicas": replicas - 1,
+            "restartPolicy": "OnFailure",
+            "template": pod_template,
+        }
+
+    return pytorchjob, base_dir

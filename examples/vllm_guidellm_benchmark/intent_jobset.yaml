@@ -1,0 +1,19 @@
+project: coldpress-project
+output: vllm-benchmark-job
+target: jobset
+
+discovery:
+  template: user_snapshot
+  tasks: all
+
+tasks:
+  - name: inference-server
+    replicas: 1
+
+  - name: benchmark-client
+    replicas: 1
+    depends_on:
+      task: inference-server
+      wait_for: ready
+    args:
+      target: "http://${REPLICA_inference-server_0}:8000"

@@ -2,16 +2,16 @@ name: Tests
 
 on:
   push:
-    branches: [ main, v0.2 ]
+    branches: [ main, v0.2, 0.2.1 ]
   pull_request:
-    branches: [ main, v0.2 ]
+    branches: [ main, v0.2, 0.2.1 ]
 
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14']
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
 
     steps:
     - name: Checkout code
@@ -50,6 +50,10 @@ jobs:
     - name: Run security tests
       run: |
         python tests/test_security.py
+
+    - name: Run script generation security tests
+      run: |
+        python tests/test_script_gen_security.py
 
     - name: Run error handling tests
       run: |

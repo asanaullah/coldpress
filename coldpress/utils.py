@@ -1,0 +1,553 @@
+# Assisted by: Claude Sonnet 4.5
+"""Shared utility functions for Coldpress generators.
+
+This module contains common functions used across JobSet, Kubeflow, and KubeRay generators
+to reduce code duplication and ensure consistent behavior.
+"""
+
+import os
+import re
+import copy
+import sys
+import yaml
+
+# Security: Dangerous shell metacharacters that could enable injection
+DANGEROUS_SHELL_CHARS = ["`", "$", "|", ";", "&", ">", "<", "\n", "\r"]
+
+# Discovery container mount path (Kubernetes volume mount point)
+DISCOVERY_MOUNT_PATH = "/tmp/result"
+
+
+def sanitize_value(value: str, context: str = "") -> str:
+    """
+    Sanitize a value for safe use in Kubernetes manifests.
+
+    Args:
+        value: Value to sanitize
+        context: Context for error messages
+
+    Returns:
+        Sanitized value
+
+    Raises:
+        ValueError: If value contains dangerous characters
+    """
+    if not isinstance(value, str):
+        return str(value)
+
+    # Check for shell metacharacters that could be dangerous in args
+    for char in DANGEROUS_SHELL_CHARS:
+        if char in value:
+            raise ValueError(
+                f"Invalid character '{char}' in value '{value}'{context}. "
+                f"This could be a security risk."
+            )
+
+    return value
+
+
+def substitute_macros(value: str, macros: dict[str, str], context: str = "") -> str:
+    """
+    Substitute ${MACRO} patterns in a string with sanitization.
+
+    Args:
+        value: String potentially containing ${MACRO} patterns
+        macros: Dict of macro names to values
+        context: Context for error messages (e.g., " for arg 'master_addr'")
+
+    Returns:
+        String with macros substituted
+
+    Raises:
+        ValueError: If macro value contains invalid characters
+    """
+    if not isinstance(value, str):
+        return value
+
+    pattern = r"\$\{([^}]+)\}"
+
+    def replacer(match):
+        macro_name = match.group(1)
+        if macro_name not in macros:
+            # Leave unresolved macros as-is
+            return match.group(0)
+
+        macro_value = str(macros[macro_name])
+
+        # Sanitize the macro value
+        try:
+            sanitized = sanitize_value(macro_value, f"{context} (macro: {macro_name})")
+        except ValueError as e:
+            raise ValueError(f"Macro substitution failed: {e}") from e
+
+        return sanitized
+
+    result = re.sub(pattern, replacer, value)
+
+    # Final sanitization of the complete result
+    return sanitize_value(result, context)
+
+
+def parse_arg(arg: str) -> tuple:
+    """
+    Parse a command-line argument into (flag, value) tuple.
+
+    Returns:
+        (flag, value): For --flag=value or --flag
+        (None, value): For positional args
+    """
+    arg_str = str(arg)
+    if arg_str.startswith("--") or arg_str.startswith("-"):
+        if "=" in arg_str:
+            flag, value = arg_str.split("=", 1)
+            return (flag, value)
+        else:
+            return (arg_str, None)
+    else:
+        return (None, arg_str)
+
+
+def replace_or_add_arg(
+    args: list,
+    key: str,
+    value: str,
+    insert_after: str = None,
+    insert_before: str = None,
+) -> list:
+    """
+    Replace existing arg or add new arg with optional positioning.
+
+    Args:
+        args: List of command-line arguments
+        key: Argument flag (without -- prefix)
+        value: Argument value
+        insert_after: Flag to insert after (optional, for new args)
+        insert_before: Flag to insert before (optional, for new args)
+
+    Returns:
+        Modified args list
+    """
+    result = list(args)
+    flag = f"--{key}"
+    skip_next = False
+    found = False
+
+    # Phase 1: Try to replace existing arg
+    for i in range(len(result)):
+        if skip_next:
+            skip_next = False
+            continue
+
+        arg_flag, arg_value = parse_arg(result[i])
+
+        if arg_flag == flag:
+            # Found the arg
+            found = True
+            if arg_value is not None:
+                # Format: --flag=value
+                result[i] = f"{flag}={value}"
+            else:
+                # Format: --flag value (two args)
+                if i + 1 < len(result):
+                    next_flag, next_value = parse_arg(result[i + 1])
+                    if next_flag is None:  # Next is a value
+                        result[i + 1] = value
+                        skip_next = True
+                    else:
+                        # Flag without value, convert to --flag=value
+                        result[i] = f"{flag}={value}"
+                else:
+                    result[i] = f"{flag}={value}"
+            break
+
+    # Phase 2: If not found, insert at specified position
+    if not found:
+        new_arg = f"{flag}={value}"
+
+        if insert_after:
+            # Find anchor and insert after it
+            anchor_flag = (
+                insert_after if insert_after.startswith("--") else f"--{insert_after}"
+            )
+            for i, arg in enumerate(result):
+                arg_flag, _ = parse_arg(arg)
+                if arg_flag == anchor_flag:
+                    result.insert(i + 1, new_arg)
+                    return result
+            # Anchor not found, append to end
+            result.append(new_arg)
+
+        elif insert_before:
+            # Find anchor and insert before it
+            anchor_flag = (
+                insert_before
+                if insert_before.startswith("--")
+                else f"--{insert_before}"
+            )
+            for i, arg in enumerate(result):
+                arg_flag, _ = parse_arg(arg)
+                if arg_flag == anchor_flag:
+                    result.insert(i, new_arg)
+                    return result
+            # Anchor not found, append to end
+            result.append(new_arg)
+
+        else:
+            # No position specified, append to end
+            result.append(new_arg)
+
+    return result
+
+
+def apply_arg_overrides(container: dict, task_intent, macros: dict[str, str]) -> None:
+    """
+    Apply argument overrides from task intent to container spec.
+
+    Args:
+        container: Container spec dict (modified in-place)
+        task_intent: Task intent with args field
+        macros: Macro substitution dict
+
+    Modifies container in-place to update args or command field.
+    """
+    if not task_intent.args:
+        return
+
+    # Determine which field contains the arguments
+    if container.get("args"):
+        args_field = "args"
+        args = (
+            container["args"]
+            if isinstance(container["args"], list)
+            else [container["args"]]
+        )
+    elif container.get("command"):
+        # If no args field but command exists, apply overrides to command
+        args_field = "command"
+        args = (
+            container["command"]
+            if isinstance(container["command"], list)
+            else [container["command"]]
+        )
+    else:
+        args_field = None
+        args = None
+
+    if args:
+        for arg_key, arg_override in task_intent.args.items():
+            # Handle both simple string and ArgOverride object
+            if isinstance(arg_override, str):
+                # Simple string value
+                value = arg_override
+                insert_after = None
+                insert_before = None
+            else:
+                # ArgOverride object (pydantic model) with insertion position
+                value = arg_override.value
+                insert_after = arg_override.insert_after
+                insert_before = arg_override.insert_before
+
+            # Substitute macros with validation
+            context = f" for arg '--{arg_key}'"
+            substituted_value = substitute_macros(value, macros, context)
+            args = replace_or_add_arg(
+                args,
+                arg_key,
+                substituted_value,
+                insert_after=insert_after,
+                insert_before=insert_before,
+            )
+
+        container[args_field] = args
+
+
+def apply_env_overrides(container: dict, task_intent, macros: dict[str, str]) -> None:
+    """
+    Apply environment variable overrides from task intent to container spec.
+
+    Args:
+        container: Container spec dict (modified in-place)
+        task_intent: Task intent with env field
+        macros: Macro substitution dict
+
+    Modifies container in-place to update env field.
+    """
+    if not task_intent.env:
+        return
+
+    # Get existing env vars
+    env_list = container.get("env", [])
+    if not isinstance(env_list, list):
+        env_list = []
+
+    for env_key, env_value in task_intent.env.items():
+        # Substitute macros with validation
+        context = f" for env var '{env_key}'"
+        substituted_value = substitute_macros(str(env_value), macros, context)
+
+        # Find and replace or append
+        found = False
+        for env_item in env_list:
+            if env_item.get("name") == env_key:
+                env_item["value"] = substituted_value
+                found = True
+                break
+
+        if not found:
+            env_list.append({"name": env_key, "value": substituted_value})
+
+    container["env"] = env_list
+
+
+def get_storage_pvc_name(project_config: dict, namespace: str) -> str:
+    """
+    Get storage PVC name from project config with fallback.
+
+    Uses the fallback chain: project config > default PVC name.
+
+    Args:
+        project_config: Project configuration dict
+        namespace: Target namespace
+
+    Returns:
+        PVC name for storage
+    """
+    from .constants import get_pvc_name
+
+    # Storage is validated by Pydantic - if present, 'results' is required
+    storage = project_config.get("storage")
+    if storage:
+        return storage["results"]
+    else:
+        return get_pvc_name(namespace)
+
+
+def parse_discovery_config(intent_config):
+    """
+    Extract discovery template path and task names from intent config.
+
+    Args:
+        intent_config: Validated IntentConfig object
+
+    Returns:
+        tuple: (discovery_template_path, discovery_task_names)
+            - discovery_template_path: Full path to discovery template YAML, or None
+            - discovery_task_names: Set of task names that should run discovery
+    """
+    from .constants import DEFAULT_DISCOVERY_DIR
+
+    discovery_template_path = None
+    discovery_task_names = set()
+
+    if intent_config.discovery:
+        discovery_config = intent_config.discovery
+        template_name = (
+            discovery_config.template
+            if hasattr(discovery_config, "template")
+            else discovery_config
+        )
+
+        # Resolve template path
+        discovery_dir = os.getenv("COLDPRESS_DISCOVERY_DIR", DEFAULT_DISCOVERY_DIR)
+        discovery_template_path = os.path.join(discovery_dir, f"{template_name}.yaml")
+
+        # Determine which tasks should run discovery
+        discovery_tasks = (
+            discovery_config.tasks if hasattr(discovery_config, "tasks") else "all"
+        )
+
+        if discovery_tasks == "all":
+            discovery_task_names = {task.name for task in intent_config.tasks}
+        elif isinstance(discovery_tasks, list):
+            # discovery_tasks is a list of task names
+            discovery_task_names = set(discovery_tasks)
+
+    return discovery_template_path, discovery_task_names
+
+
+def extract_configmap_name(manifest: dict, manifest_type: str) -> str | None:
+    """
+    Extract ConfigMap name from a manifest.
+
+    Args:
+        manifest: The manifest dict (JobSet, PyTorchJob, RayJob, etc.)
+        manifest_type: Type of manifest ("jobset", "pytorchjob", "rayjob", etc.)
+
+    Returns:
+        ConfigMap name if found, None otherwise
+    """
+    if manifest_type == "jobset":
+        # Search for configMap volumes in JobSet manifest
+        for replicated_job in manifest.get("spec", {}).get("replicatedJobs", []):
+            job_template = (
+                replicated_job.get("template", {}).get("spec", {}).get("template", {})
+            )
+            volumes = job_template.get("spec", {}).get("volumes", [])
+            for volume in volumes:
+                if "configMap" in volume:
+                    return volume["configMap"]["name"]
+
+    elif manifest_type == "pytorchjob":
+        # Search for configMap volumes in PyTorchJob manifest
+        replica_specs = manifest.get("spec", {}).get("pytorchReplicaSpecs", {})
+        for replica_spec in replica_specs.values():
+            volumes = (
+                replica_spec.get("template", {}).get("spec", {}).get("volumes", [])
+            )
+            for volume in volumes:
+                if "configMap" in volume:
+                    return volume["configMap"]["name"]
+
+    elif manifest_type == "rayjob":
+        # Search for configMap volumes in RayJob manifest (head group)
+        head_spec = (
+            manifest.get("spec", {}).get("rayClusterSpec", {}).get("headGroupSpec", {})
+        )
+        volumes = head_spec.get("template", {}).get("spec", {}).get("volumes", [])
+        for volume in volumes:
+            if "configMap" in volume:
+                return volume["configMap"]["name"]
+
+    return None
+
+
+def build_discovery_init_container(
+    template_path: str,
+    base_dir: str,
+    storage_volume_name: str,
+    task_id: int | None = None,
+    per_pod_directory: bool = False,
+):
+    """
+    Build discovery init container from template.
+
+    Args:
+        template_path: Path to discovery template YAML
+        base_dir: Base directory path
+        storage_volume_name: Name of the storage volume to mount
+        task_id: Task ID for result path (optional, for JobSet use)
+        per_pod_directory: If True, create pod-specific subdirectories using downward API
+
+    Returns:
+        dict: Init container spec, or None if template not found
+    """
+    try:
+        # Read discovery template
+        with open(template_path, "r") as f:
+            template = yaml.safe_load(f)
+
+        # Extract Pod spec
+        pod_spec = template.get("spec", {})
+        containers = pod_spec.get("containers", [])
+
+        if not containers:
+            return None
+
+        # Get template name from filename and sanitize for shell use
+        template_name = (
+            os.path.basename(template_path).replace(".yaml", "").replace(".yml", "")
+        )
+        # Sanitize template_name to prevent command injection
+        sanitized_template_name = sanitize_value(
+            template_name, " for discovery template"
+        )
+
+        # Copy container and modify for init container use
+        container = copy.deepcopy(containers[0])
+        container["name"] = "discovery"
+
+        if per_pod_directory:
+            # Kubeflow multi-replica mode - use pod-specific subdirectories
+            # Master writes to base dir, workers to worker-{index}/
+            # Mount full PVC and create path using downward API labels
+            container["volumeMounts"] = [
+                {
+                    "name": storage_volume_name,
+                    "mountPath": "/data",
+                }
+            ]
+
+            # Add replica type and index env vars via downward API
+            if "env" not in container:
+                container["env"] = []
+            container["env"].extend(
+                [
+                    {
+                        "name": "REPLICA_TYPE",
+                        "valueFrom": {
+                            "fieldRef": {
+                                "fieldPath": "metadata.labels['training.kubeflow.org/replica-type']"
+                            }
+                        },
+                    },
+                    {
+                        "name": "REPLICA_INDEX",
+                        "valueFrom": {
+                            "fieldRef": {
+                                "fieldPath": "metadata.labels['training.kubeflow.org/replica-index']"
+                            }
+                        },
+                    },
+                ]
+            )
+
+            # Modify script to create pod-specific directory based on replica type
+            # Master: {base_dir}/, Worker: {base_dir}/worker-{index}/
+            # SAFETY: base_dir validated earlier in generation, env vars from K8s labels
+            original_command = (
+                container.get("args", [""])[0] if container.get("args") else ""
+            )
+
+            # Prepend directory selection logic and update output path
+            setup_cmd = f"""
+if [ "$REPLICA_TYPE" = "master" ]; then
+  DISCOVERY_DIR=/data/{base_dir}
+else
+  DISCOVERY_DIR=/data/{base_dir}/worker-$REPLICA_INDEX
+fi
+mkdir -p $DISCOVERY_DIR && cd $DISCOVERY_DIR && """
+
+            # Replace discovery mount path references with current directory
+            modified_command = original_command.replace(
+                f"{DISCOVERY_MOUNT_PATH}/", "./"
+            )
+            # Update final rename command
+            rename_cmd = f"\nif [ -f ./discovery.json ]; then mv ./discovery.json ./discovery_{sanitized_template_name}.json; fi"
+
+            container["args"] = [setup_cmd + modified_command + rename_cmd]
+
+        else:
+            # JobSet or single-pod mode - use subPath
+            # Construct result path
+            if task_id is not None:
+                # JobSet mode - task-specific path
+                result_path = f"{base_dir}/task-{task_id}"
+            else:
+                # Single-pod mode - base directory only
+                result_path = base_dir
+
+            # Update volume mounts to use PVC with subPath
+            container["volumeMounts"] = [
+                {
+                    "name": storage_volume_name,
+                    "mountPath": DISCOVERY_MOUNT_PATH,
+                    "subPath": result_path,
+                }
+            ]
+
+            # Add rename command to output discovery_{template_name}.json
+            # SAFETY: sanitized_template_name validated above to prevent shell injection
+            original_command = (
+                container.get("args", [""])[0] if container.get("args") else ""
+            )
+            rename_cmd = f"\nif [ -f {DISCOVERY_MOUNT_PATH}/discovery.json ]; then mv {DISCOVERY_MOUNT_PATH}/discovery.json {DISCOVERY_MOUNT_PATH}/discovery_{sanitized_template_name}.json; fi"
+
+            if container.get("args"):
+                container["args"] = [original_command + rename_cmd]
+
+        return container
+    except (FileNotFoundError, yaml.YAMLError, KeyError, IndexError) as e:
+        sys.stderr.write(
+            f"Warning: Could not load discovery template {template_path}: {e}\n"
+        )
+        return None

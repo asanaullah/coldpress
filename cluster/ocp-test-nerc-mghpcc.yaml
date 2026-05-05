@@ -7,10 +7,10 @@
 # Node IDs are assigned based on position in list (0, 1, 2, ...)
 nodes:
   - hostname: wrk-4  # Will be labeled coldpress.node=0
-    gpus: 4
+    gpus: 2
     roce_nics: 4
   - hostname: wrk-6  # Will be labeled coldpress.node=1
-    gpus: 4
+    gpus: 2
     roce_nics: 4
 
 # ClusterQueue name
@@ -30,6 +30,8 @@ spec:
         - "BatchJob"
         - "JobSet"
         - "Pod"
+        - "PyTorchJob"
+        - "RayJob"
 ---
 # JobSet Operator
 apiVersion: operator.openshift.io/v1
@@ -42,7 +44,7 @@ spec:
   operatorLogLevel: Normal
 ---
 # ResourceFlavor for node0
-apiVersion: kueue.x-k8s.io/v1beta1
+apiVersion: kueue.x-k8s.io/v1beta2
 kind: ResourceFlavor
 metadata:
   name: node0
@@ -51,7 +53,7 @@ spec:
     coldpress.node: "0"
 ---
 # ResourceFlavor for node1
-apiVersion: kueue.x-k8s.io/v1beta1
+apiVersion: kueue.x-k8s.io/v1beta2
 kind: ResourceFlavor
 metadata:
   name: node1
@@ -60,7 +62,7 @@ spec:
     coldpress.node: "1"
 ---
 # ClusterQueue for Coldpress
-apiVersion: kueue.x-k8s.io/v1beta1
+apiVersion: kueue.x-k8s.io/v1beta2
 kind: ClusterQueue
 metadata:
   name: coldpress-cluster-queue
@@ -76,7 +78,7 @@ spec:
       - name: memory
         nominalQuota: 1024Gi
       - name: nvidia.com/gpu
-        nominalQuota: 4
+        nominalQuota: 2
       - name: openshift.io/eno5np0rdma
         nominalQuota: 1
       - name: openshift.io/eno6np0rdma
@@ -92,7 +94,7 @@ spec:
       - name: memory
         nominalQuota: 1024Gi
       - name: nvidia.com/gpu
-        nominalQuota: 4
+        nominalQuota: 2
       - name: openshift.io/eno5np0rdma
         nominalQuota: 1
       - name: openshift.io/eno6np0rdma

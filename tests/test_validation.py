@@ -3,8 +3,6 @@
 
 import yaml
 from coldpress_common import (
-    validate_config,
-    validate_task_specs,
     validate_project_config,
 )
 from pydantic import ValidationError
@@ -16,23 +14,24 @@ def test_valid_configs():
     print("Testing VALID configurations")
     print("=" * 60)
 
-    # Test 1: Valid config.yaml
-    print("\n1. Testing config.yaml validation...")
-    with open("examples/pytorch_ddp_training/config.yaml") as f:
-        config_data = yaml.safe_load(f)
-        config = validate_config(config_data)
-        print(
-            f"   ✓ Valid config: project={config.project}, discovery={config.discovery}"
-        )
+    # Test 1: Valid intent.yaml
+    print("\n1. Testing intent.yaml validation...")
+    from coldpress_common import validate_intent
 
-    # Test 2: Valid job-spec.yaml
-    print("\n2. Testing job-spec.yaml validation...")
+    with open("examples/pytorch_ddp_training/intent_jobset.yaml") as f:
+        intent_data = yaml.safe_load(f)
+        intent = validate_intent(intent_data)
+        print(f"   ✓ Valid intent: target={intent.target}, tasks={len(intent.tasks)}")
+
+    # Test 2: Valid job-spec.yaml (vanilla k8s Jobs)
+    print("\n2. Testing job-spec.yaml (vanilla k8s)...")
     with open("examples/pytorch_ddp_training/job-spec.yaml") as f:
-        task_specs = list(yaml.safe_load_all(f))
-        validated = validate_task_specs(task_specs)
-        print(f"   ✓ Valid task spec: {len(validated)} task(s)")
-        for i, task in enumerate(validated):
-            print(f"     - Task {i}: {task.name} ({len(task.containers)} container(s))")
+        manifests = list(yaml.safe_load_all(f))
+        jobs = [m for m in manifests if m.get("kind") == "Job"]
+        print(f"   ✓ Valid job spec: {len(jobs)} Job(s)")
+        for i, job in enumerate(jobs):
+            job_name = job["metadata"]["name"]
+            print(f"     - Job {i}: {job_name}")
 
     # Test 3: Valid project config
     print("\n3. Testing project config validation...")
@@ -41,15 +40,14 @@ def test_valid_configs():
         project = validate_project_config(project_data)
         print(f"   ✓ Valid project: namespace={project.namespace}")
 
-    # Test 4: Multi-task job spec
-    print("\n4. Testing multi-task job-spec.yaml...")
-    with open("examples/vllm_guidellm_benchmark/job-spec.yaml") as f:
-        task_specs = list(yaml.safe_load_all(f))
-        validated = validate_task_specs(task_specs)
-        print(f"   ✓ Valid multi-task spec: {len(validated)} task(s)")
-        for i, task in enumerate(validated):
-            blocking = task.blocking or "completion"
-            print(f"     - Task {i}: {task.name} (blocking={blocking})")
+    # Test 4: Multi-task intent spec
+    print("\n4. Testing multi-task intent.yaml...")
+    with open("examples/vllm_guidellm_benchmark/intent_jobset.yaml") as f:
+        intent_data = yaml.safe_load(f)
+        intent = validate_intent(intent_data)
+        print(f"   ✓ Valid multi-task intent: {len(intent.tasks)} task(s)")
+        for i, task in enumerate(intent.tasks):
+            print(f"     - Task {i}: {task.name} (replicas={task.replicas})")
 
 
 def test_invalid_configs():
@@ -58,51 +56,53 @@ def test_invalid_configs():
     print("Testing INVALID configurations (should catch errors)")
     print("=" * 60)
 
-    # Test 1: Missing required field
-    print("\n1. Testing missing 'name' field...")
+    from coldpress_common import validate_intent
+
+    # Test 1: Missing required field (project)
+    print("\n1. Testing missing 'project' field...")
     try:
-        invalid_task = [{"containers": [{"name": "test", "image": "alpine"}]}]
-        validate_task_specs(invalid_task)
-        print("   ❌ ERROR: Should have caught missing 'name' field!")
+        invalid_intent = {
+            "target": "jobset",
+            "output": "test",
+            "tasks": [{"name": "test-task", "replicas": 1}],
+        }
+        validate_intent(invalid_intent)
+        print("   ❌ ERROR: Should have caught missing 'project' field!")
     except (ValidationError, ValueError) as e:
         print(f"   ✓ Caught error: {str(e).splitlines()[0][:70]}...")
 
-    # Test 2: Missing containers
-    print("\n2. Testing missing 'containers' field...")
+    # Test 2: Missing tasks
+    print("\n2. Testing missing 'tasks' field...")
     try:
-        invalid_task = [{"name": "test-task"}]
-        validate_task_specs(invalid_task)
-        print("   ❌ ERROR: Should have caught missing 'containers' field!")
+        invalid_intent = {"project": "test", "output": "test", "target": "jobset"}
+        validate_intent(invalid_intent)
+        print("   ❌ ERROR: Should have caught missing 'tasks' field!")
     except (ValidationError, ValueError) as e:
         print(f"   ✓ Caught error: {str(e).splitlines()[0][:70]}...")
 
-    # Test 3: Invalid blocking endpoint without health check
-    print("\n3. Testing endpoint blocking without health check...")
+    # Test 3: Invalid target type
+    print("\n3. Testing invalid target type...")
     try:
-        invalid_task = [
-            {
-                "name": "test-task",
-                "blocking": "endpoint",
-                "containers": [{"name": "test", "image": "alpine"}],
-            }
-        ]
-        validate_task_specs(invalid_task)
-        print("   ❌ ERROR: Should have caught missing health check!")
+        invalid_intent = {
+            "project": "test",
+            "output": "test",
+            "target": "invalid_target",
+            "tasks": [{"name": "test", "replicas": 1}],
+        }
+        validate_intent(invalid_intent)
+        print("   ❌ ERROR: Should have caught invalid target type!")
     except (ValidationError, ValueError) as e:
         print(f"   ✓ Caught error: {str(e).splitlines()[0][:70]}...")
 
-    # Test 4: Invalid blocking type
-    print("\n4. Testing invalid blocking type...")
+    # Test 4: Invalid replicas (negative)
+    print("\n4. Testing invalid replicas...")
     try:
-        invalid_task = [
-            {
-                "name": "test-task",
-                "blocking": "invalid_type",
-                "containers": [{"name": "test", "image": "alpine"}],
-            }
-        ]
-        validate_task_specs(invalid_task)
-        print("   ❌ ERROR: Should have caught invalid blocking type!")
+        invalid_intent = {
+            "backend": "jobset",
+            "tasks": [{"name": "test", "replicas": -1}],
+        }
+        validate_intent(invalid_intent)
+        print("   ❌ ERROR: Should have caught invalid replicas!")
     except (ValidationError, ValueError) as e:
         print(f"   ✓ Caught error: {str(e).splitlines()[0][:70]}...")
 

@@ -52,6 +52,13 @@ dmypy.json
 # pyright
 .pyright/
 
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
 # Jupyter Notebook
 .ipynb_checkpoints
 
@@ -64,9 +71,19 @@ dmypy.json
 legacy/
 *.legacy
 
+# Development features (not ready for release)
+coldpress/distributed/
+examples/pytorch_coldpress_run/
+
 # Generated output directories
 output/
 manifests/
 
 # User-specific files
 users/test.yaml
+
+# Documentation
+docs/
+#README.md
+CHANGELOG.md
+CLAUDE.md

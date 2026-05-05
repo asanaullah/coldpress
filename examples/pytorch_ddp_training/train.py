@@ -50,25 +50,35 @@ def main():
     dist.init_process_group("nccl")
     rank = dist.get_rank()
 
-    # Dataset loading (synchronized to avoid race condition)
+    # Dataset loading
+    # Use local /tmp for dataset downloads (each pod downloads its own copy)
+    # /tmp is pod-local, so only local_rank 0 within each pod should download
+    dataset_root = "/tmp/data"
+
     transform = transforms.Compose(
         [transforms.ToTensor(), transforms.Lambda(lambda x: torch.flatten(x))]
     )
 
-    if rank == 0:
+    # Only local_rank 0 downloads to avoid race conditions within the pod
+    if local_rank == 0:
         if args.dataset.lower() == "mnist":
             torchvision.datasets.MNIST(
-                root="/tmp/data", train=True, download=True, transform=transform
+                root=dataset_root, train=True, download=True, transform=transform
             )
         else:
             raise ValueError("Unsupported dataset")
 
-    dist.barrier()
+    # Wait for local_rank 0 to finish downloading
+    if dist.is_initialized():
+        dist.barrier()
 
+    # All ranks load the dataset
     if args.dataset.lower() == "mnist":
         full_dataset = torchvision.datasets.MNIST(
-            root="/tmp/data", train=True, download=False, transform=transform
+            root=dataset_root, train=True, download=False, transform=transform
         )
+    else:
+        raise ValueError("Unsupported dataset")
 
     input_dim = full_dataset[0][0].numel()
     output_dim = len(full_dataset.classes) if hasattr(full_dataset, "classes") else 10
