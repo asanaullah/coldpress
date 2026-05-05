@@ -230,6 +230,12 @@ def generate_pytorchjob_from_intent(
     apply_arg_overrides(container, task_intent, macros)
     apply_env_overrides(container, task_intent, macros)
 
+    # Add subPath to results volume mount in main container
+    if "volumeMounts" in container:
+        for volume_mount in container["volumeMounts"]:
+            if volume_mount.get("name") == "results":
+                volume_mount["subPath"] = base_dir
+
     # Build pod spec
     pod_spec = {
         "restartPolicy": "OnFailure",
@@ -297,7 +303,8 @@ def generate_pytorchjob_from_intent(
 
         if storage_volume_name:
             discovery_init = build_discovery_init_container(
-                discovery_template_path, base_dir, storage_volume_name
+                discovery_template_path, base_dir, storage_volume_name,
+                task_id=None, per_pod_directory=True
             )
             if discovery_init:
                 init_containers.append(discovery_init)

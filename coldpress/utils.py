@@ -413,6 +413,7 @@ def build_discovery_init_container(
     base_dir: str,
     storage_volume_name: str,
     task_id: int | None = None,
+    per_pod_directory: bool = False,
 ):
     """
     Build discovery init container from template.
@@ -422,6 +423,7 @@ def build_discovery_init_container(
         base_dir: Base directory path
         storage_volume_name: Name of the storage volume to mount
         task_id: Task ID for result path (optional, for JobSet use)
+        per_pod_directory: If True, create pod-specific subdirectories using downward API
 
     Returns:
         dict: Init container spec, or None if template not found
@@ -451,32 +453,90 @@ def build_discovery_init_container(
         container = copy.deepcopy(containers[0])
         container["name"] = "discovery"
 
-        # Construct result path
-        if task_id is not None:
-            # JobSet mode - task-specific path
-            result_path = f"{base_dir}/task-{task_id}"
+        if per_pod_directory:
+            # Kubeflow multi-replica mode - use pod-specific subdirectories
+            # Master writes to base dir, workers to worker-{index}/
+            # Mount full PVC and create path using downward API labels
+            container["volumeMounts"] = [
+                {
+                    "name": storage_volume_name,
+                    "mountPath": "/data",
+                }
+            ]
+
+            # Add replica type and index env vars via downward API
+            if "env" not in container:
+                container["env"] = []
+            container["env"].extend([
+                {
+                    "name": "REPLICA_TYPE",
+                    "valueFrom": {
+                        "fieldRef": {
+                            "fieldPath": "metadata.labels['training.kubeflow.org/replica-type']"
+                        }
+                    }
+                },
+                {
+                    "name": "REPLICA_INDEX",
+                    "valueFrom": {
+                        "fieldRef": {
+                            "fieldPath": "metadata.labels['training.kubeflow.org/replica-index']"
+                        }
+                    }
+                }
+            ])
+
+            # Modify script to create pod-specific directory based on replica type
+            # Master: {base_dir}/, Worker: {base_dir}/worker-{index}/
+            # SAFETY: base_dir validated earlier in generation, env vars from K8s labels
+            original_command = (
+                container.get("args", [""])[0] if container.get("args") else ""
+            )
+
+            # Prepend directory selection logic and update output path
+            setup_cmd = f"""
+if [ "$REPLICA_TYPE" = "master" ]; then
+  DISCOVERY_DIR=/data/{base_dir}
+else
+  DISCOVERY_DIR=/data/{base_dir}/worker-$REPLICA_INDEX
+fi
+mkdir -p $DISCOVERY_DIR && cd $DISCOVERY_DIR && """
+
+            # Replace /tmp/result references with current directory
+            modified_command = original_command.replace("/tmp/result/", "./")
+            # Update final rename command
+            rename_cmd = f"\nif [ -f ./discovery.json ]; then mv ./discovery.json ./discovery_{sanitized_template_name}.json; fi"
+
+            container["args"] = [setup_cmd + modified_command + rename_cmd]
+
         else:
-            # KubeRay/Kubeflow mode - base directory only
-            result_path = base_dir
+            # JobSet or single-pod mode - use subPath
+            # Construct result path
+            if task_id is not None:
+                # JobSet mode - task-specific path
+                result_path = f"{base_dir}/task-{task_id}"
+            else:
+                # Single-pod mode - base directory only
+                result_path = base_dir
 
-        # Update volume mounts to use PVC
-        container["volumeMounts"] = [
-            {
-                "name": storage_volume_name,
-                "mountPath": "/tmp/result",
-                "subPath": result_path,
-            }
-        ]
+            # Update volume mounts to use PVC with subPath
+            container["volumeMounts"] = [
+                {
+                    "name": storage_volume_name,
+                    "mountPath": "/tmp/result",
+                    "subPath": result_path,
+                }
+            ]
 
-        # Add rename command to output discovery_{template_name}.json
-        # SAFETY: sanitized_template_name validated above to prevent shell injection
-        original_command = (
-            container.get("args", [""])[0] if container.get("args") else ""
-        )
-        rename_cmd = f"\nif [ -f /tmp/result/discovery.json ]; then mv /tmp/result/discovery.json /tmp/result/discovery_{sanitized_template_name}.json; fi"
+            # Add rename command to output discovery_{template_name}.json
+            # SAFETY: sanitized_template_name validated above to prevent shell injection
+            original_command = (
+                container.get("args", [""])[0] if container.get("args") else ""
+            )
+            rename_cmd = f"\nif [ -f /tmp/result/discovery.json ]; then mv /tmp/result/discovery.json /tmp/result/discovery_{sanitized_template_name}.json; fi"
 
-        if container.get("args"):
-            container["args"] = [original_command + rename_cmd]
+            if container.get("args"):
+                container["args"] = [original_command + rename_cmd]
 
         return container
     except (FileNotFoundError, yaml.YAMLError, KeyError, IndexError) as e:
