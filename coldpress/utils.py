@@ -467,24 +467,26 @@ def build_discovery_init_container(
             # Add replica type and index env vars via downward API
             if "env" not in container:
                 container["env"] = []
-            container["env"].extend([
-                {
-                    "name": "REPLICA_TYPE",
-                    "valueFrom": {
-                        "fieldRef": {
-                            "fieldPath": "metadata.labels['training.kubeflow.org/replica-type']"
-                        }
-                    }
-                },
-                {
-                    "name": "REPLICA_INDEX",
-                    "valueFrom": {
-                        "fieldRef": {
-                            "fieldPath": "metadata.labels['training.kubeflow.org/replica-index']"
-                        }
-                    }
-                }
-            ])
+            container["env"].extend(
+                [
+                    {
+                        "name": "REPLICA_TYPE",
+                        "valueFrom": {
+                            "fieldRef": {
+                                "fieldPath": "metadata.labels['training.kubeflow.org/replica-type']"
+                            }
+                        },
+                    },
+                    {
+                        "name": "REPLICA_INDEX",
+                        "valueFrom": {
+                            "fieldRef": {
+                                "fieldPath": "metadata.labels['training.kubeflow.org/replica-index']"
+                            }
+                        },
+                    },
+                ]
+            )
 
             # Modify script to create pod-specific directory based on replica type
             # Master: {base_dir}/, Worker: {base_dir}/worker-{index}/

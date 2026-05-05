@@ -303,8 +303,11 @@ def generate_pytorchjob_from_intent(
 
         if storage_volume_name:
             discovery_init = build_discovery_init_container(
-                discovery_template_path, base_dir, storage_volume_name,
-                task_id=None, per_pod_directory=True
+                discovery_template_path,
+                base_dir,
+                storage_volume_name,
+                task_id=None,
+                per_pod_directory=True,
             )
             if discovery_init:
                 init_containers.append(discovery_init)
