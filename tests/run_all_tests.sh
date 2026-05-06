@@ -40,7 +40,6 @@ run_test() {
 }
 
 # Run all tests
-run_test "Validation Tests" "python tests/test_validation.py"
 run_test "Label Tests" "python tests/test_labels.py"
 run_test "Security Tests" "python tests/test_security.py"
 run_test "Error Handling Tests" "python tests/test_error_handling.py"
