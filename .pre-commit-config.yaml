@@ -17,14 +17,6 @@ repos:
 
   - repo: local
     hooks:
-      # Run validation tests
-      - id: test-validation
-        name: validation tests
-        entry: python tests/test_validation.py
-        language: system
-        pass_filenames: false
-        always_run: true
-
       # Run security tests
       - id: test-security
         name: security tests

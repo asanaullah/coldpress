@@ -529,7 +529,6 @@ cd output/vllm-kserve-inference/
 ## Testing
 
 Comprehensive test suite validates:
-- Pydantic model validation (`test_validation.py`)
 - Standard Kubernetes labels (`test_labels.py`)
 - Security and input validation (`test_security.py`)
 - Error handling (`test_error_handling.py`)
@@ -545,7 +544,6 @@ Comprehensive test suite validates:
 
 **Run individual tests:**
 ```bash
-python tests/test_validation.py
 python tests/test_labels.py
 bash tests/test_exit_codes.sh
 ```

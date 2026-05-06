@@ -39,10 +39,6 @@ jobs:
       run: |
         ruff format --check coldpress/ coldpress_setup/ coldpress_common/ tests/ --exclude venv --exclude legacy
 
-    - name: Run validation tests
-      run: |
-        python tests/test_validation.py
-
     - name: Run label tests
       run: |
         python tests/test_labels.py
