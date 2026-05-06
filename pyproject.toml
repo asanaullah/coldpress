@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "coldpress"
-version = "0.2.1"
+version = "0.3.0"
 description = "AI/HPC workload orchestration for Kubernetes/OpenShift"
 readme = "README.md"
 requires-python = ">=3.10"

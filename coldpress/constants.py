@@ -2,7 +2,7 @@
 """Coldpress constants - centralized configuration values."""
 
 # Version
-COLDPRESS_VERSION = "0.2.1"
+COLDPRESS_VERSION = "0.3.0"
 
 # Resource naming
 COLDPRESS_PREFIX = "coldpress"
